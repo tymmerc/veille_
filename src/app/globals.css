@@ -1,0 +1,389 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FAFAFE;
+  --foreground: #1E1E2E;
+  --card: #FFFFFF;
+  --card-foreground: #1E1E2E;
+  --popover: #FFFFFF;
+  --popover-foreground: #1E1E2E;
+  --primary: #6C5CE7;
+  --primary-foreground: #FFFFFF;
+  --muted: #F0EFF5;
+  --muted-foreground: #7C7A8A;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.15);
+  --input: rgba(0, 0, 0, 0.05);
+  --ring: #6C5CE7;
+  --rose: #E84393;
+  --cyber: #DC2626;
+  --tech: #0984E3;
+  --surface: #F0EEF8;
+  --surface-hover: #E4E0F3;
+  --glow: rgba(108, 92, 231, 0.15);
+}
+
+.dark {
+  --background: #0C0C10;
+  --foreground: #FAFAFE;
+  --card: #121218;
+  --card-foreground: #FAFAFE;
+  --popover: #121218;
+  --popover-foreground: #FAFAFE;
+  --primary: #8B7CF7;
+  --primary-foreground: #FFFFFF;
+  --muted: #1A1A24;
+  --muted-foreground: #8C8CA0;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.15);
+  --input: rgba(255, 255, 255, 0.06);
+  --ring: #8B7CF7;
+  --rose: #F06292;
+  --cyber: #EF5350;
+  --tech: #42A5F5;
+  --surface: #181820;
+  --surface-hover: #22222E;
+  --glow: rgba(139, 124, 247, 0.2);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+  }
+  /* Visible focus ring for keyboard navigation */
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  /* Hide focus ring for mouse clicks */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Glow effect for primary elements */
+.glow {
+  box-shadow: 0 0 20px var(--glow), 0 0 60px rgba(108, 92, 231, 0.06);
+}
+
+/* Prompt input glow on focus */
+.prompt-glow:focus-within {
+  box-shadow: 0 0 0 1px var(--primary), 0 0 20px var(--glow), 0 0 60px rgba(108, 92, 231, 0.05);
+}
+
+/* ═══ Animated border glow for prompt — multi-state ═══ */
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@property --glow-opacity {
+  syntax: "<number>";
+  initial-value: 1;
+  inherits: false;
+}
+
+@keyframes glowSpin {
+  from { --glow-angle: 0deg; }
+  to { --glow-angle: 360deg; }
+}
+@keyframes glowPulse {
+  0%, 100% { --glow-opacity: 0.6; }
+  50% { --glow-opacity: 1; }
+}
+@keyframes glowBreath {
+  0%, 100% { filter: blur(12px) brightness(1); }
+  50% { filter: blur(18px) brightness(1.4); }
+}
+@keyframes thinkRainbow {
+  0%   { filter: blur(14px) brightness(1.2) hue-rotate(0deg); }
+  50%  { filter: blur(20px) brightness(1.6) hue-rotate(40deg); }
+  100% { filter: blur(14px) brightness(1.2) hue-rotate(0deg); }
+}
+@keyframes thinkScale {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.015); }
+}
+@keyframes typeBounce {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.005); }
+  100% { transform: scale(1); }
+}
+
+/* ─── Base state (idle): slow gentle glow ─── */
+.prompt-border-glow {
+  position: relative;
+  isolation: isolate;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.prompt-border-glow::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--glow-angle),
+    transparent 0%,
+    var(--primary) 10%,
+    transparent 20%,
+    transparent 50%,
+    rgba(139, 124, 247, 0.3) 60%,
+    transparent 70%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: glowSpin 6s linear infinite;
+  opacity: 0.5;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+.prompt-border-glow::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--glow-angle),
+    transparent 0%,
+    var(--glow) 10%,
+    transparent 20%,
+    transparent 50%,
+    rgba(139, 124, 247, 0.06) 60%,
+    transparent 70%
+  );
+  filter: blur(12px);
+  animation: glowSpin 6s linear infinite;
+  opacity: 0.4;
+  transition: opacity 0.4s ease, filter 0.4s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Hover: glow brightens + speeds up ─── */
+.prompt-border-glow:hover::before {
+  opacity: 0.8;
+  animation: glowSpin 4s linear infinite;
+}
+.prompt-border-glow:hover::after {
+  opacity: 0.7;
+  filter: blur(14px) brightness(1.2);
+  animation: glowSpin 4s linear infinite;
+}
+.prompt-border-glow:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px var(--glow);
+}
+
+/* ─── Focus (clicked): full brightness, fast spin ─── */
+.prompt-border-glow.prompt-focused::before {
+  opacity: 1;
+  animation: glowSpin 3s linear infinite;
+  background: conic-gradient(
+    from var(--glow-angle),
+    transparent 0%,
+    var(--primary) 8%,
+    rgba(139, 124, 247, 0.6) 16%,
+    transparent 24%,
+    transparent 48%,
+    rgba(139, 124, 247, 0.5) 56%,
+    var(--primary) 64%,
+    transparent 72%
+  );
+}
+.prompt-border-glow.prompt-focused::after {
+  opacity: 1;
+  animation: glowSpin 3s linear infinite, glowBreath 2s ease-in-out infinite;
+  background: conic-gradient(
+    from var(--glow-angle),
+    transparent 0%,
+    var(--glow) 8%,
+    rgba(139, 124, 247, 0.15) 16%,
+    transparent 24%,
+    transparent 48%,
+    rgba(139, 124, 247, 0.1) 56%,
+    var(--glow) 64%,
+    transparent 72%
+  );
+}
+
+/* ─── Typing: pulse + subtle bounce ─── */
+.prompt-border-glow.prompt-typing {
+  animation: typeBounce 0.15s ease;
+}
+.prompt-border-glow.prompt-typing::before {
+  opacity: 1;
+  animation: glowSpin 2.5s linear infinite, glowPulse 0.8s ease-in-out infinite;
+}
+.prompt-border-glow.prompt-typing::after {
+  opacity: 1;
+  animation: glowSpin 2.5s linear infinite, glowBreath 1s ease-in-out infinite;
+}
+
+/* ─── Thinking (submitting): intense rainbow hue-shift ─── */
+.prompt-border-glow.prompt-thinking {
+  animation: thinkScale 2s ease-in-out infinite;
+}
+.prompt-border-glow.prompt-thinking::before {
+  opacity: 1;
+  padding: 2px;
+  animation: glowSpin 1.5s linear infinite;
+  background: conic-gradient(
+    from var(--glow-angle),
+    var(--primary) 0%,
+    var(--tech) 15%,
+    var(--primary) 30%,
+    var(--rose) 50%,
+    var(--primary) 65%,
+    var(--tech) 80%,
+    var(--primary) 100%
+  );
+}
+.prompt-border-glow.prompt-thinking::after {
+  opacity: 1;
+  inset: -6px;
+  animation: glowSpin 1.5s linear infinite, thinkRainbow 2s ease-in-out infinite;
+  background: conic-gradient(
+    from var(--glow-angle),
+    rgba(108, 92, 231, 0.25) 0%,
+    rgba(9, 132, 227, 0.2) 15%,
+    rgba(108, 92, 231, 0.25) 30%,
+    rgba(232, 67, 147, 0.15) 50%,
+    rgba(108, 92, 231, 0.25) 65%,
+    rgba(9, 132, 227, 0.2) 80%,
+    rgba(108, 92, 231, 0.25) 100%
+  );
+}
+
+/* Subtle animated gradient for hero background */
+@keyframes drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -20px) scale(1.05); }
+  66% { transform: translate(-20px, 15px) scale(0.95); }
+}
+
+.hero-orb {
+  animation: drift 20s ease-in-out infinite;
+}
+
+.hero-orb-2 {
+  animation: drift 25s ease-in-out infinite reverse;
+}
+
+/* Page transition */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-page-in {
+  animation: fadeIn 0.25s ease-out;
+}
+
+/* Skeleton loading */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, rgba(0,0,0,0.04) 25%, rgba(0,0,0,0.07) 50%, rgba(0,0,0,0.04) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+.dark .skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 200% 100%;
+}
+.dark .card-hover:hover {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.dark .card-shadow {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* Score ring glow for high scores */
+@keyframes score-pulse {
+  0%, 100% { filter: drop-shadow(0 0 3px currentColor); }
+  50% { filter: drop-shadow(0 0 8px currentColor); }
+}
+.score-glow-pulse {
+  animation: score-pulse 2s ease-in-out infinite;
+}
+.score-glow-subtle {
+  filter: drop-shadow(0 0 3px currentColor);
+}
+.score-glow {
+  box-shadow: 0 0 8px rgba(108, 92, 231, 0.3), 0 0 20px rgba(108, 92, 231, 0.1);
+}
+
+/* Like/bookmark pop animation */
+@keyframes pop {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.35); }
+  60% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+.animate-pop {
+  animation: pop 0.3s ease-out;
+  display: inline-flex;
+}
+
+/* Card soft shadow */
+.card-shadow {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+/* Like animation */
+@keyframes heartPop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+.like-pop {
+  animation: heartPop 0.3s ease;
+}
+
+/* Stagger children animation */
+@keyframes staggerIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stagger-in > * {
+  animation: staggerIn 0.3s ease-out backwards;
+}
+.stagger-in > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-in > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-in > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-in > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-in > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-in > *:nth-child(6) { animation-delay: 250ms; }
+.stagger-in > *:nth-child(7) { animation-delay: 300ms; }
+.stagger-in > *:nth-child(8) { animation-delay: 350ms; }
+.stagger-in > *:nth-child(9) { animation-delay: 400ms; }
+.stagger-in > *:nth-child(10) { animation-delay: 450ms; }

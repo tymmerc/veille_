@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String     @id @default(cuid())
+  discordId     String?    @unique @map("discord_id")
+  username      String
+  email         String?    @unique
+  passwordHash  String?    @map("password_hash")
+  avatar        String?
+  webhookUrl    String?    @map("webhook_url")
+  slackWebhookUrl String? @map("slack_webhook_url")
+  prompt        String?    @db.Text
+  promptConfig  Json?      @map("prompt_config")
+  scoringNotes  String?    @map("scoring_notes") @db.Text
+  minScore      Int        @default(6) @map("min_score")
+  notifyEnabled Boolean    @default(true) @map("notify_enabled")
+  syncHours     Json?      @map("sync_hours")
+  syncDays      Json?      @map("sync_days")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  isPublic      Boolean    @default(false) @map("is_public")
+  likes              Like[]
+  bookmarks          Bookmark[]
+  reads              ArticleRead[]
+  friendshipsSent    Friendship[]    @relation("friendships_sent")
+  friendshipsRecv    Friendship[]    @relation("friendships_received")
+  sharesSent         SharedArticle[] @relation("shares_sent")
+  sharesReceived     SharedArticle[] @relation("shares_received")
+  presets            Preset[]
+  shareReplies       ShareReply[]
+  promptHistory      PromptHistory[]
+
+  @@map("users")
+}
+
+model Article {
+  id         String     @id @default(cuid())
+  platform   String
+  externalId String     @map("external_id")
+  title      String
+  url        String
+  text       String?
+  summary    String     @default("")
+  score      Int        @default(0)
+  category   String
+  source     String
+  titleOriginal String?  @map("title_original")
+  isOfficial    Boolean  @default(false) @map("is_official")
+  createdAt  DateTime?  @map("created_at")
+  foundAt    DateTime   @default(now()) @map("found_at")
+  likes      Like[]
+  bookmarks  Bookmark[]
+  reads      ArticleRead[]
+  shares     SharedArticle[]
+
+  @@unique([platform, externalId])
+  @@index([foundAt])
+  @@index([category])
+  @@map("articles")
+}
+
+model Like {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  articleId String   @map("article_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, articleId])
+  @@index([articleId])
+  @@map("likes")
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  articleId String   @map("article_id")
+  tags      Json?    // ["a-lire", "important", "partager"]
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, articleId])
+  @@index([userId])
+  @@map("bookmarks")
+}
+
+model Friendship {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  friendId  String   @map("friend_id")
+  status    String   @default("pending") // pending, accepted
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation("friendships_sent", fields: [userId], references: [id], onDelete: Cascade)
+  friend    User     @relation("friendships_received", fields: [friendId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendId])
+  @@index([friendId])
+  @@map("friendships")
+}
+
+model SharedArticle {
+  id        String   @id @default(cuid())
+  fromId    String   @map("from_id")
+  toId      String   @map("to_id")
+  articleId String   @map("article_id")
+  message   String?  @db.Text
+  seen      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  from      User     @relation("shares_sent", fields: [fromId], references: [id], onDelete: Cascade)
+  to        User     @relation("shares_received", fields: [toId], references: [id], onDelete: Cascade)
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  replies   ShareReply[]
+
+  @@index([toId, seen])
+  @@map("shared_articles")
+}
+
+model NotificationLog {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  articleCount Int      @map("article_count")
+  sentAt       DateTime @default(now()) @map("sent_at")
+  success      Boolean  @default(true)
+
+  @@index([userId, sentAt])
+  @@map("notification_logs")
+}
+
+model Preset {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  name       String
+  categories Json     // ["ia", "tech"]
+  keywords   Json?    // ["anthropic", "claude code"] - direct keyword match
+  isDefault  Boolean  @default(false) @map("is_default")
+  order      Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("presets")
+}
+
+model ArticleRead {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  articleId String   @map("article_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, articleId])
+  @@index([userId])
+  @@map("article_reads")
+}
+
+model ShareReply {
+  id             String        @id @default(cuid())
+  sharedArticleId String       @map("shared_article_id")
+  userId         String        @map("user_id")
+  message        String        @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  sharedArticle  SharedArticle @relation(fields: [sharedArticleId], references: [id], onDelete: Cascade)
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sharedArticleId])
+  @@map("share_replies")
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@map("password_resets")
+}
+
+model PromptHistory {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  prompt    String   @db.Text
+  config    Json
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("prompt_history")
+}
