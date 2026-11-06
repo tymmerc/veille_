@@ -11,3 +11,4 @@ data/*.tmp
 data/market/
 .coverage
 .pytest_cache/
+data/analyses/
