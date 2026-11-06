@@ -2,167 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
-
-type FollowedAccount = {
-  platform: "twitter" | "blog";
-  handle: string;
-  label: string;
-};
-
-type PromptConfig = {
-  keywords?: string[];
-  hn_keywords?: string[];
-  subreddits?: string[];
-  rss_feeds?: string[];
-  enabled_sources?: string[];
-  followed_accounts?: FollowedAccount[];
-};
-
-// Map source keys to platform/source values for filtering
-const SOURCE_PLATFORM_MAP: Record<string, { platforms?: string[]; sources?: string[] }> = {
-  reddit: { platforms: ["reddit"] },
-  hackernews: { platforms: ["hackernews"] },
-  rss: { platforms: ["rss"] },
-  arxiv: { platforms: ["arxiv"] },
-  blog: { platforms: ["blog"] },
-  github: { platforms: ["github"] },
-};
-
-function matchesEnabledSources(
-  article: { platform: string; isOfficial: boolean },
-  enabledSources: string[] | undefined,
-): boolean {
-  if (!enabledSources || enabledSources.length === 0) return true;
-  if (enabledSources.length >= 5) return true;
-
-  for (const source of enabledSources) {
-    const mapping = SOURCE_PLATFORM_MAP[source];
-    if (!mapping) continue;
-    if (mapping.platforms?.includes(article.platform)) return true;
-  }
-  return false;
-}
-
-// Pre-compiled keyword matcher for performance (avoids creating RegExp per article)
-type KeywordMatcher = { multi: string[]; patterns: RegExp[] };
-
-function buildKeywordMatcher(config: PromptConfig): KeywordMatcher {
-  const keywords = [
-    ...(config.keywords || []),
-    ...(config.hn_keywords || []),
-  ].map((k) => k.toLowerCase());
-
-  const multi: string[] = [];
-  const patterns: RegExp[] = [];
-  for (const kw of keywords) {
-    if (kw.includes(" ")) {
-      multi.push(kw);
-    } else {
-      try {
-        const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        patterns.push(new RegExp(`\\b${escaped}\\b`, "i"));
-      } catch {
-        multi.push(kw); // fallback to substring
-      }
-    }
-  }
-  return { multi, patterns };
-}
-
-function matchesUserInterests(
-  article: { title: string; summary: string; source: string },
-  config: PromptConfig,
-  matcher: KeywordMatcher,
-  subredditSet: Set<string>,
-): boolean {
-  // No keywords = nothing matches (don't show everything)
-  if (matcher.multi.length === 0 && matcher.patterns.length === 0 && subredditSet.size === 0) return false;
-
-  const text = `${article.title} ${article.summary || ""}`.toLowerCase();
-
-  // Multi-word keywords: substring match
-  if (matcher.multi.some((kw) => text.includes(kw))) return true;
-  // Single-word: pre-compiled regex
-  if (matcher.patterns.some((re) => re.test(text))) return true;
-  // Subreddit source match
-  if (subredditSet.has(article.source.toLowerCase())) return true;
-
-  return false;
-}
-
-// Extract hostname from URL
-function extractDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
-
-// Classify article into a feed section
-type FeedSection = "followed" | "relevant" | "discover";
-
-// Pre-computed classification context (built once per request, reused for all articles)
-type ClassifyContext = {
-  followedSubs: Set<string>;
-  followedDomains: string[];
-  matcher: KeywordMatcher;
-  subredditSet: Set<string>;
-  enabledSources: string[] | undefined;
-  config: PromptConfig | null;
-};
-
-function buildClassifyContext(config: PromptConfig | null): ClassifyContext {
-  if (!config) {
-    return { followedSubs: new Set(), followedDomains: [], matcher: { multi: [], patterns: [] }, subredditSet: new Set(), enabledSources: undefined, config: null };
-  }
-
-  const followedSubs = new Set((config.subreddits || []).map((s) => `r/${s}`.toLowerCase()));
-  const followedDomains = (config.rss_feeds || []).map((u) => extractDomain(u)).filter(Boolean);
-  for (const account of config.followed_accounts || []) {
-    if (account.platform === "blog" && account.handle) {
-      const domain = extractDomain(account.handle);
-      if (domain) followedDomains.push(domain);
-    }
-  }
-
-  const matcher = buildKeywordMatcher(config);
-  const subredditSet = new Set((config.subreddits || []).map((s) => `r/${s}`.toLowerCase()));
-
-  return { followedSubs, followedDomains, matcher, subredditSet, enabledSources: config.enabled_sources, config };
-}
-
-function classifyArticle(
-  article: { title: string; summary: string; source: string; platform: string; isOfficial: boolean; url: string },
-  ctx: ClassifyContext,
-): FeedSection {
-  if (!ctx.config) return "discover";
-
-  // "Followed" = source matches user's explicit subscriptions
-  if (ctx.followedSubs.has(article.source.toLowerCase())) return "followed";
-
-  const articleDomain = extractDomain(article.url);
-  if (articleDomain && ctx.followedDomains.some((d) => articleDomain.includes(d) || d.includes(articleDomain))) {
-    return "followed";
-  }
-
-  if (matchesUserInterests(article, ctx.config, ctx.matcher, ctx.subredditSet)) return "relevant";
-
-  return "discover";
-}
-
-function classifyWithSourceFilter(
-  article: { title: string; summary: string; source: string; platform: string; isOfficial: boolean; url: string },
-  ctx: ClassifyContext,
-): FeedSection {
-  const section = classifyArticle(article, ctx);
-  if (section !== "discover" && ctx.enabledSources && ctx.enabledSources.length > 0 && ctx.enabledSources.length < 5) {
-    if (!matchesEnabledSources(article, ctx.enabledSources)) {
-      return "discover";
-    }
-  }
-  return section;
-}
+import {
+  buildClassifyContext,
+  classifyWithSourceFilter,
+  type FeedSection,
+  type PromptConfig,
+} from "@/lib/classify";
 
 const ARTICLES_RATE_LIMIT = { name: "articles_read", maxRequests: 60, windowSeconds: 60 };
 
@@ -215,6 +60,7 @@ export async function GET(request: NextRequest) {
         foundAt: true,
         titleOriginal: true,
         isOfficial: true,
+        text: true, // keyword match on the start of the text, never sent to the browser
         _count: { select: { likes: true } },
       },
     }),
@@ -261,7 +107,7 @@ export async function GET(request: NextRequest) {
 
   // Enrich with user-specific data
   const enrichArticle = (a: typeof allArticles[0], extra: { liked?: boolean; bookmarked?: boolean; read?: boolean }) => {
-    const { _count, ...rest } = a;
+    const { _count, text: _text, ...rest } = a;
     return {
       ...rest,
       ...extra,

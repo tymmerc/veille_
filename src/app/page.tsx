@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { PhraseList } from "@/components/phrase-list";
+import { NotifyModesCard } from "@/components/notify-modes-card";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { Header } from "@/components/header";
@@ -55,9 +57,6 @@ type PromptConfig = {
   enabled_sources?: string[]; // ["reddit", "rss", "hackernews", "arxiv", "blog"]
 };
 
-const DAYS = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"];
-const DEFAULT_HOURS = [8, 19];
-const DEFAULT_DAYS = [1, 2, 3, 4, 5];
 
 // Source icons
 function RedditIcon() {
@@ -305,7 +304,7 @@ function PromptSection({
               <span className="text-[11px] text-muted-foreground/25 font-mono">
                 {submitting ? (
                   <span className="text-primary/50 animate-pulse">analyse en cours...</span>
-                ) : prompt.length > 0 ? `${prompt.length} car.` : "enter pour envoyer"}
+                ) : prompt.length > 0 ? `${prompt.length} car.` : "entrée pour envoyer · maj+entrée pour une autre phrase"}
               </span>
               <button
                 onClick={onSubmit}
@@ -341,36 +340,8 @@ function PromptSection({
   return (
     <div className="mb-6">
       <div className={`${glowClass} border border-transparent`}>
-        <div className="flex items-center gap-3 p-3 sm:p-4">
-          <div className="flex-1 min-w-0">
-            <textarea
-              value={prompt}
-              onChange={handleChange}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); }
-              }}
-              rows={1}
-              className="w-full resize-none bg-transparent text-[14px] text-foreground placeholder:text-muted-foreground/25 focus:outline-none leading-relaxed"
-              placeholder="Decris ce que tu veux suivre..."
-            />
-          </div>
-          <button
-            onClick={onSubmit}
-            disabled={!prompt.trim() || submitting || prompt.trim() === currentPrompt}
-            className="shrink-0 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground transition-all hover:brightness-110 disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            {submitting ? (
-              <span className="animate-pulse">analyse...</span>
-            ) : (
-              <>
-                <SparkIcon />
-                modifier
-              </>
-            )}
-          </button>
-        </div>
+        <PhraseList value={prompt} onChange={setPrompt} onSubmit={onSubmit} submitting={submitting}
+          unchanged={prompt.trim() === (currentPrompt ?? "").trim()} />
       </div>
       {error && (
         <p className="mt-2 text-[12px] text-cyber font-mono">{error}</p>
@@ -686,47 +657,6 @@ function FollowedAccountsCard({
   );
 }
 
-function ScheduleCard({
-  syncHours, syncDays, onToggleHour, onToggleDay, saved,
-}: {
-  syncHours: number[]; syncDays: number[];
-  onToggleHour: (h: number) => void; onToggleDay: (d: number) => void;
-  saved: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-card card-shadow p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-[10px] uppercase tracking-wider text-muted-foreground/40 font-mono">planning</h3>
-        {saved && <span className="text-[10px] text-primary/60 font-mono animate-pulse">sauvegarde</span>}
-      </div>
-      <div className="flex gap-1 mb-3">
-        {DAYS.map((label, i) => (
-          <button key={i} onClick={() => onToggleDay(i)}
-            className={`flex-1 rounded-md py-1.5 text-[10px] font-mono transition-all ${
-              syncDays.includes(i)
-                ? "bg-primary/15 text-primary border border-primary/25"
-                : "bg-surface text-muted-foreground/25 border border-transparent hover:text-muted-foreground/50"
-            }`}>
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="grid grid-cols-12 gap-[3px]">
-        {Array.from({ length: 24 }, (_, h) => (
-          <button key={h} onClick={() => onToggleHour(h)}
-            className={`rounded py-1 text-[9px] font-mono transition-all ${
-              syncHours.includes(h)
-                ? "bg-primary/20 text-primary"
-                : "bg-surface text-muted-foreground/15 hover:text-muted-foreground/30"
-            }`}>
-            {h.toString().padStart(2, "0")}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function SlackIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className="text-[#4A154B]">
@@ -861,8 +791,11 @@ export default function HomePage() {
   const [webhookSaved, setWebhookSaved] = useState(false);
   const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
   const [slackSaved, setSlackSaved] = useState(false);
-  const [syncHours, setSyncHours] = useState<number[]>(DEFAULT_HOURS);
-  const [syncDays, setSyncDays] = useState<number[]>(DEFAULT_DAYS);
+  // null = no schedule (summary after every hourly run with news)
+  const [syncHours, setSyncHours] = useState<number[] | null>(null);
+  const [syncDays, setSyncDays] = useState<number[] | null>(null);
+  const [notifyDigest, setNotifyDigest] = useState(true);
+  const [instantMin, setInstantMin] = useState<number | null>(null);
   const [scheduleSaved, setScheduleSaved] = useState(false);
   const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [minScore, setMinScore] = useState(6);
@@ -890,8 +823,10 @@ export default function HomePage() {
     ]).then(([me, settings, sync, articles]) => {
       if (me.user?.prompt) { setCurrentPrompt(me.user.prompt); setPrompt(me.user.prompt); }
       if (me.user?.promptConfig) setConfig(me.user.promptConfig);
-      if (me.user?.syncHours) setSyncHours(me.user.syncHours);
-      if (me.user?.syncDays) setSyncDays(me.user.syncDays);
+      setSyncHours(settings.syncHours ?? null);
+      setSyncDays(settings.syncDays ?? null);
+      setNotifyDigest(settings.notifyDigest ?? true);
+      setInstantMin(settings.notifyInstantMin ?? null);
       if (me.user?.webhookUrl) setWebhookUrl(me.user.webhookUrl);
       if (settings.slackWebhookUrl) setSlackWebhookUrl(settings.slackWebhookUrl);
       setMinScore(settings.minScore ?? 6);
@@ -927,35 +862,28 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, [syncRunning, syncStep]);
 
-  const autoSaveSchedule = useCallback((hours: number[], days: number[]) => {
-    if (!scheduleInitialized.current) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      fetch("/veille/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ syncHours: hours, syncDays: days }),
-      }).then(() => {
-        setScheduleSaved(true);
-        setTimeout(() => setScheduleSaved(false), 1500);
-      });
-    }, 1000);
+  const saveSettings = useCallback((body: Record<string, unknown>) => {
+    fetch("/veille/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => {
+      if (!r.ok) return;
+      setScheduleSaved(true);
+      setTimeout(() => setScheduleSaved(false), 1500);
+    });
   }, []);
 
-  const toggleHour = (h: number) => {
-    setSyncHours((prev) => {
-      const next = prev.includes(h) ? prev.filter((x) => x !== h) : [...prev, h].sort((a, b) => a - b);
-      autoSaveSchedule(next, syncDays);
-      return next;
-    });
-  };
+  const autoSaveSchedule = useCallback((hours: number[] | null, days: number[] | null) => {
+    if (!scheduleInitialized.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveSettings({ syncHours: hours, syncDays: days }), 800);
+  }, [saveSettings]);
 
-  const toggleDay = (d: number) => {
-    setSyncDays((prev) => {
-      const next = prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort((a, b) => a - b);
-      autoSaveSchedule(syncHours, next);
-      return next;
-    });
+  const handleSchedule = ({ hours, days }: { hours: number[] | null; days: number[] | null }) => {
+    setSyncHours(hours);
+    setSyncDays(days);
+    autoSaveSchedule(hours, days);
   };
 
   const handleSubmit = async () => {
@@ -969,13 +897,14 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: prompt.trim() }),
       });
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      setCurrentPrompt(prompt.trim());
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "");
+      setPrompt(data.prompt ?? prompt.trim());
+      setCurrentPrompt(data.prompt ?? prompt.trim());
       setConfig(data.config);
       if (data.syncTriggered) { setSyncStep("collecte en cours..."); setSyncRunning(true); }
-    } catch {
-      setError("Erreur lors de l'analyse. Reessaie.");
+    } catch (err) {
+      setError((err instanceof Error && err.message) || "Erreur lors de l'analyse. Reessaie.");
       setSyncStep(null);
     } finally {
       setSubmitting(false);
@@ -1127,7 +1056,14 @@ export default function HomePage() {
           }}
         />
         <SyncCard syncRunning={syncRunning} lastRun={lastRun} syncStep={syncStep} onSync={handleSync} />
-        <ScheduleCard syncHours={syncHours} syncDays={syncDays} onToggleHour={toggleHour} onToggleDay={toggleDay} saved={scheduleSaved} />
+        <NotifyModesCard
+          digest={notifyDigest}
+          onDigest={(on) => { setNotifyDigest(on); saveSettings({ notifyDigest: on }); }}
+          schedule={{ hours: syncHours, days: syncDays }}
+          onSchedule={handleSchedule}
+          instantMin={instantMin}
+          onInstant={(min) => { setInstantMin(min); saveSettings({ notifyInstantMin: min }); }}
+          saved={scheduleSaved} />
         <NotificationsCard webhookUrl={webhookUrl} setWebhookUrl={setWebhookUrl}
           onSaveWebhook={handleWebhookSave} webhookSaved={webhookSaved}
           slackWebhookUrl={slackWebhookUrl} setSlackWebhookUrl={setSlackWebhookUrl}
@@ -1141,6 +1077,12 @@ export default function HomePage() {
           className="inline-flex items-center gap-2.5 rounded-xl border border-primary/20 bg-primary/[0.04] px-6 py-3 text-[13px] font-medium text-foreground transition-all hover:bg-primary/[0.08] hover:border-primary/30 font-mono">
           voir mon feed <ArrowIcon />
         </Link>
+        {user.username === "tym_merc" && (
+          <Link href="/analyse"
+            className="ml-3 inline-flex items-center gap-2.5 rounded-xl px-4 py-3 text-[13px] text-muted-foreground transition-colors hover:text-foreground font-mono">
+            l&apos;analyse de la semaine
+          </Link>
+        )}
       </div>
     </div>
   );

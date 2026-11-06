@@ -23,6 +23,11 @@ model User {
   notifyEnabled Boolean    @default(true) @map("notify_enabled")
   syncHours     Json?      @map("sync_hours")
   syncDays      Json?      @map("sync_days")
+  // Notifications (06/11/2026): summary on the schedule above, and/or instant alert from a score
+  notifyDigest     Boolean   @default(true) @map("notify_digest")
+  notifyInstantMin Int?      @map("notify_instant_min")
+  // Written by the scraper (tech-veille) after each digest; was missing from the schema
+  lastNotifiedAt   DateTime? @map("last_notified_at") @db.Timestamptz(6)
   createdAt     DateTime   @default(now()) @map("created_at")
   updatedAt     DateTime   @updatedAt @map("updated_at")
   isPublic      Boolean    @default(false) @map("is_public")

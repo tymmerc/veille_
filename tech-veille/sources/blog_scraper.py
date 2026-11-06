@@ -37,6 +37,15 @@ BLOG_CONFIGS = [
         "category": "ia",
         "is_official": True,
     },
+    # Official Claude articles (claude.com/blog redirects here). Asked by Tym on 06/11/2026.
+    {
+        "name": "Claude",
+        "urls": ["https://claude.com/fr/resources/articles"],
+        "article_selector": "a[href*='/resources/articles/']",
+        "base_url": "https://claude.com",
+        "category": "ia",
+        "is_official": True,
+    },
     # OpenAI blocks server-side requests (403). Content comes via RSS + HackerNews instead.
     {
         "name": "Google DeepMind",
@@ -70,12 +79,20 @@ class BlogScraperSource(BaseSource):
         failed = 0
 
         for blog in self.configs:
+            key = f"Blog {blog['name']}"
             try:
-                self._scrape_blog(blog, articles, seen_urls)
-                succeeded += 1
-            except Exception:
+                pages_ok = self._scrape_blog(blog, articles, seen_urls)
+            except Exception as exc:
                 failed += 1
                 log.exception("Error scraping blog %s", blog["name"])
+                self._note(key, False, type(exc).__name__)
+                continue
+            if pages_ok:
+                succeeded += 1
+                self._note(key, True)
+            else:
+                failed += 1
+                self._note(key, False, "aucune page ne répond")
 
         log.info(
             "BlogScraper: %d articles collected (%d blogs succeeded, %d failed)",
@@ -88,8 +105,10 @@ class BlogScraperSource(BaseSource):
         blog: dict,
         articles: list[Article],
         seen_urls: set[str],
-    ) -> None:
+    ) -> int:
+        """Scrape one blog. Returns how many of its pages answered."""
         name = blog["name"]
+        pages_ok = 0
         base_url = blog.get("base_url", "")
         selector = blog.get("article_selector", "a")
         category = blog.get("category", "ia")
@@ -119,6 +138,7 @@ class BlogScraperSource(BaseSource):
             if resp is None:
                 log.error("All %d attempts failed for %s", MAX_RETRIES, page_url)
                 continue
+            pages_ok += 1
 
             soup = BeautifulSoup(resp.text, "html.parser")
             links = soup.select(selector)
@@ -191,3 +211,4 @@ class BlogScraperSource(BaseSource):
                 articles.append(article)
 
         log.info("Blog %s: %d articles found", name, len([a for a in articles if a.source == name]))
+        return pages_ok

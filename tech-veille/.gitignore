@@ -1,0 +1,13 @@
+.env
+.env.*
+venv/
+__pycache__/
+*.pyc
+# État local : jamais dans git (failles de la stack, instantanés des concurrents)
+data/*.json
+data/*.md
+data/*.txt
+data/*.tmp
+data/market/
+.coverage
+.pytest_cache/

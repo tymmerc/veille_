@@ -22,15 +22,15 @@ export type PromptConfig = {
 // ─── Verified RSS feeds by topic ──────────────────────────────────
 // ONLY verified, working URLs. The LLM is NOT asked for RSS — we map them here.
 const KNOWN_RSS: Record<string, string[]> = {
-  openai: ["https://blog.openai.com/rss/"],
+  openai: ["https://openai.com/news/rss.xml"],
   google: ["https://blog.google/technology/ai/rss/"],
   deepmind: ["https://blog.google/technology/ai/rss/"],
   ai: [
-    "https://blog.openai.com/rss/",
-    "https://feeds.technologyreview.com/technologyreview/ai/",
+    "https://openai.com/news/rss.xml",
+    "https://www.technologyreview.com/topic/artificial-intelligence/feed",
     "https://techcrunch.com/category/artificial-intelligence/feed/",
   ],
-  llm: ["https://feeds.technologyreview.com/technologyreview/ai/"],
+  llm: ["https://www.technologyreview.com/topic/artificial-intelligence/feed"],
   cybersecurity: [
     "https://krebsonsecurity.com/feed/",
     "https://feeds.feedburner.com/TheHackersNews",
@@ -43,7 +43,7 @@ const KNOWN_RSS: Record<string, string[]> = {
   ransomware: ["https://www.bleepingcomputer.com/feed/"],
   kubernetes: ["https://kubernetes.io/feed.xml"],
   devops: ["https://feeds.feedburner.com/TheNewStack"],
-  react: ["https://thisweekinreact.com/rss.xml"],
+  react: ["https://thisweekinreact.com/newsletter/rss.xml"],
   blockchain: ["https://cointelegraph.com/rss"],
   privacy: ["https://www.eff.org/rss/updates.xml"],
   gdpr: ["https://www.eff.org/rss/updates.xml"],
@@ -227,7 +227,7 @@ Tu dois generer un JSON avec:
 IMPORTANT: PAS de champ "rss_feeds" — les RSS sont geres automatiquement.
 
 REGLES:
-- Privilegier les expressions composees specifiques (pas "mobile app" mais "flutter development", "react native app")
+- TOUJOURS inclure les mots-cles de base EN PLUS des expressions composees. Exemple: pour "malware", genere ["malware", "malware analysis", "ransomware", "trojan", "exploit"]. Le mot seul ET les expressions.
 - Inclure le nom de la technologie/outil specifique dans les keywords
 - Subreddits: uniquement des vrais (pas de noms inventes)
 - Reponds UNIQUEMENT avec le JSON valide

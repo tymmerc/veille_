@@ -1,8 +1,14 @@
+"""Digest messages for Discord and Slack.
+
+The layout is built from stored summaries only: no LLM call here. The old
+"bulletin" written by the local model was one more place where it invented facts.
+"""
 from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 
 import requests
 
@@ -11,225 +17,193 @@ from sources.base import Article
 
 log = logging.getLogger(__name__)
 
-# ─── Digest generation via Ollama ─────────────────────────────────
-
-DIGEST_PROMPT = """Ecris un bulletin tech du jour en 4-6 lignes a partir de ces articles.
-
-Exemple de format:
-- **Claude Code sort en open source** : Anthropic rend son CLI de coding dispo pour tous, avec un mode auto-accept securise
-- **Faille critique dans Kubernetes** : CVE-2026-1234 permet une escalation de privileges, patch dispo
-- **Levee record pour Granola** : $125M pour transformer le notetaker en plateforme IA complete
-
-Regle: regroupe par theme, sois factuel, en francais, pas de blabla.
-
-Articles:
-{articles}
-
-Bulletin:"""
+THEME_ORDER = ["cyber", "ia", "tech"]
+DIGEST_LIMIT = 10
+TITLE_MAX = 110
+HOOK_MAX = 220
+DAYS_FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 
 
-def _generate_digest(articles: list[Article]) -> str:
-    """Use Ollama to generate a short trend digest from articles."""
-    # Build article list for the prompt
-    lines = []
-    for a in articles[:20]:  # Cap at 20 to fit context
-        hook = _extract_hook(a.summary)
-        lines.append(f"- [{a.category}] {a.title} (score {a.score}/10) — {hook}")
-
-    article_text = "\n".join(lines)
-    prompt = DIGEST_PROMPT.format(articles=article_text)
-
-    try:
-        resp = requests.post(
-            f"{config.OLLAMA_URL}/api/generate",
-            json={
-                "model": config.OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.3, "num_predict": 500},
-            },
-            timeout=120,
-        )
-        if resp.ok:
-            text = resp.json().get("response", "").strip()
-            if text:
-                return text
-    except Exception:
-        log.warning("Ollama digest generation failed, falling back to simple format", exc_info=True)
-
-    # Fallback: simple top-5 list
-    fallback = []
-    for a in articles[:5]:
-        fallback.append(f"- **{a.title}** ({a.score}/10)")
-    return "\n".join(fallback)
+@dataclass(frozen=True)
+class Section:
+    key: str
+    label: str
+    emoji: str
+    color: int
+    items: tuple[str, ...]
 
 
-# ─── Discord ──────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class Digest:
+    header: str
+    sections: tuple[Section, ...]
+    more: int
 
-def send_discord(articles: list[Article], webhook_url: str = "") -> bool:
-    """Send a trend digest to Discord via webhook."""
-    webhook_url = webhook_url or ""
+
+# ─── Layout ───────────────────────────────────────────────────────
+
+def _hook(article: Article) -> str:
+    summary = article.summary or ""
+    hook = summary.split("|||", 1)[0].strip()
+    if not hook or hook == article.title.strip():
+        return ""
+    return hook if len(hook) <= HOOK_MAX else hook[: HOOK_MAX - 1].rsplit(" ", 1)[0] + "…"
+
+
+def _short(text: str, limit: int) -> str:
+    text = text.replace("[", "(").replace("]", ")")  # keeps markdown links intact
+    return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+def _item(article: Article) -> str:
+    marker = "🔥" if article.score >= 9 else "▸"
+    lines = [f"{marker} **[{_short(article.title, TITLE_MAX)}]({article.url})**"]
+    hook = _hook(article)
+    if hook:
+        lines.append(hook)
+    lines.append(f"*{article.source} · {article.score}/10*")
+    return "\n".join(lines)
+
+
+def build_digest(
+    articles: list[Article], now: datetime, limit: int = DIGEST_LIMIT, header: str | None = None,
+) -> Digest:
+    ranked = sorted(articles, key=lambda a: a.score, reverse=True)
+    shown, more = ranked[:limit], max(len(ranked) - limit, 0)
+
+    period = "matin" if now.hour < 12 else ("après-midi" if now.hour < 18 else "soir")
+    count = f"{len(articles)} article" + ("s" if len(articles) > 1 else "")
+    title_override = header
+    header = f"📡 Veille du {DAYS_FR[now.weekday()]} {now.day}/{now.month} · {period} · {count}"
+
+    keys = THEME_ORDER + sorted({a.category for a in shown} - set(THEME_ORDER))
+    sections = []
+    for key in keys:
+        items = tuple(_item(a) for a in shown if a.category == key)
+        if not items:
+            continue
+        info = config.CATEGORIES.get(key, {"label": key, "emoji": "📰", "color": 0x2F3136})
+        sections.append(Section(key, info["label"], info["emoji"], info["color"], items))
+    return Digest(header=title_override or header, sections=tuple(sections), more=more)
+
+
+def _footer(digest: Digest) -> str:
+    rest = f"+{digest.more} autres · " if digest.more else ""
+    return f"{rest}Tout voir : {config.DASHBOARD_URL}"
+
+
+def discord_payload(digest: Digest) -> dict:
+    embeds = [
+        {
+            "title": f"{s.emoji} {s.label}",
+            "description": "\n\n".join(s.items)[:4000],
+            "color": s.color,
+        }
+        for s in digest.sections
+    ]
+    if embeds:
+        embeds[-1]["footer"] = {"text": _footer(digest)}
+    return {"content": f"**{digest.header}**", "embeds": embeds[:10]}
+
+
+def slack_blocks(digest: Digest) -> list[dict]:
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": digest.header, "emoji": True}},
+    ]
+    for s in digest.sections:
+        text = f"*{s.emoji} {s.label}*\n\n" + "\n\n".join(_to_slack(i) for i in s.items)
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _footer(digest)}]})
+    return blocks
+
+
+def _to_slack(item: str) -> str:
+    """Discord markdown → Slack mrkdwn for our own item format."""
+    import re
+
+    item = re.sub(r"\*\*\[(.+?)\]\((\S+?)\)\*\*", r"*<\2|\1>*", item)
+    return re.sub(r"^\*(.+)\*$", r"_\1_", item, flags=re.MULTILINE)
+
+
+# ─── Sending ──────────────────────────────────────────────────────
+
+def _post(webhook_url: str, payload: dict, ok_statuses: set[int], what: str) -> bool:
+    for attempt in range(2):
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=10)
+        except Exception:
+            if attempt == 0:
+                time.sleep(2)
+                continue
+            log.exception("Failed to send %s message", what)
+            return False
+        if resp.status_code in ok_statuses:
+            return True
+        if resp.status_code == 429 and attempt == 0:
+            time.sleep(min(float(resp.headers.get("Retry-After", 2) or 2), 10))
+            continue
+        if resp.status_code >= 500 and attempt == 0:
+            time.sleep(2)
+            continue
+        log.error("%s error %d: %s", what, resp.status_code, resp.text[:200])
+        return False
+    return False
+
+
+def send_alert(lines: list[str], webhook_url: str) -> bool:
+    """Plain Discord message for source health alerts."""
+    if not lines or not webhook_url:
+        return False
+    content = "**Veille : état des sources**\n" + "\n".join(lines)
+    return _post(webhook_url, {"content": content[:1900]}, {200, 204}, "Discord alert")
+
+
+def send_stack_report(blocks: list[str], webhook_url: str) -> bool:
+    """Private Discord report of known flaws in the stack (admin webhook only)."""
+    if not blocks or not webhook_url:
+        return False
+    embeds = [{"description": b, "color": 0xED4245} for b in blocks[:10]]
+    embeds[0]["title"] = "🛡️ Failles connues dans ta stack"
+    return _post(webhook_url, {"embeds": embeds}, {200, 204}, "Discord stack")
+
+
+def send_discord(articles: list[Article], webhook_url: str = "", now: datetime | None = None) -> bool:
     if not webhook_url:
         log.error("No webhook URL provided")
         return False
     if not articles:
-        log.info("No articles to send")
         return True
-
-    now = datetime.now(timezone.utc)
-    period = "matin" if now.hour < 14 else "soir"
-    date_str = now.strftime("%d/%m/%Y")
-
-    # Sort by score desc, take top articles
-    sorted_articles = sorted(articles, key=lambda a: a.score, reverse=True)
-
-    # Generate AI digest
-    digest = _generate_digest(sorted_articles)
-
-    # Count by category
-    cats = {}
-    for a in articles:
-        cat_info = config.CATEGORIES.get(a.category, {"emoji": "📰", "label": a.category})
-        cats[a.category] = cats.get(a.category, 0) + 1
-    cat_summary = " · ".join(f"{config.CATEGORIES.get(c, {}).get('emoji', '📰')} {n}" for c, n in cats.items())
-
-    # Top 3 articles with links
-    top_links = []
-    for a in sorted_articles[:3]:
-        emoji = _pick_emoji(a.score)
-        top_links.append(f"{emoji} [{a.title[:60]}]({a.url}) `{a.score}/10`")
-
-    embeds = [
-        {
-            "title": f"📡 Veille Tech — {date_str} ({period})",
-            "description": digest,
-            "color": 0x6C5CE7,
-        },
-        {
-            "title": "🔗 Top articles",
-            "description": "\n".join(top_links),
-            "color": 0x2F3136,
-        },
-        {
-            "description": f"📊 **{len(articles)} articles** | {cat_summary}",
-            "color": 0x2F3136,
-        },
-    ]
-
-    for attempt in range(2):
-        try:
-            resp = requests.post(webhook_url, json={"embeds": embeds}, timeout=10)
-            if resp.status_code == 204:
-                log.info("Discord digest sent (%d articles)", len(articles))
-                return True
-            elif resp.status_code >= 500 and attempt == 0:
-                time.sleep(2)
-                continue
-            else:
-                log.error("Discord error %d: %s", resp.status_code, resp.text[:200])
-                return False
-        except Exception:
-            if attempt == 0:
-                time.sleep(2)
-                continue
-            log.exception("Failed to send Discord message")
-            return False
-
-    return False
+    digest = build_digest(articles, now or datetime.now(config.LOCAL_TZ))
+    ok = _post(webhook_url, discord_payload(digest), {200, 204}, "Discord")
+    if ok:
+        log.info("Discord digest sent (%d articles)", len(articles))
+    return ok
 
 
-# ─── Slack ────────────────────────────────────────────────────────
+def send_instant(articles: list[Article], discord_url: str = "", slack_url: str = "") -> bool:
+    """Instant alert for important articles, right after they are found."""
+    if not articles:
+        return False
+    now = datetime.now(config.LOCAL_TZ)
+    noun = "article important" if len(articles) == 1 else "articles importants"
+    digest = build_digest(articles, now, header=f"⚡ Alerte veille · {len(articles)} {noun}")
+    sent = False
+    if discord_url:
+        sent = _post(discord_url, discord_payload(digest), {200, 204}, "Discord instant") or sent
+    if slack_url:
+        sent = _post(slack_url, {"blocks": slack_blocks(digest)}, {200}, "Slack instant") or sent
+    return sent
 
-def send_slack(articles: list[Article], webhook_url: str = "") -> bool:
-    """Send a trend digest to Slack via webhook."""
-    webhook_url = webhook_url or ""
+
+def send_slack(articles: list[Article], webhook_url: str = "", now: datetime | None = None) -> bool:
     if not webhook_url:
         log.error("No Slack webhook URL provided")
         return False
     if not articles:
-        log.info("No articles to send to Slack")
         return True
-
-    now = datetime.now(timezone.utc)
-    period = "matin" if now.hour < 14 else "soir"
-    date_str = now.strftime("%d/%m/%Y")
-
-    sorted_articles = sorted(articles, key=lambda a: a.score, reverse=True)
-
-    # Generate AI digest
-    digest = _generate_digest(sorted_articles)
-
-    # Top 3 with links
-    top_links = []
-    for a in sorted_articles[:3]:
-        emoji = _pick_emoji(a.score)
-        top_links.append(f"{emoji} *{a.title[:60]}* ({a.score}/10) — <{a.url}|lire>")
-
-    cats = {}
-    for a in articles:
-        cats[a.category] = cats.get(a.category, 0) + 1
-    cat_summary = " · ".join(f"{config.CATEGORIES.get(c, {}).get('emoji', '📰')} {n}" for c, n in cats.items())
-
-    blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"📡 Veille Tech — {date_str} ({period})", "emoji": True},
-        },
-        {"type": "divider"},
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": digest},
-        },
-        {"type": "divider"},
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "*🔗 Top articles*\n" + "\n".join(top_links)},
-        },
-        {"type": "divider"},
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"📊 *{len(articles)} articles* | {cat_summary}"}],
-        },
-    ]
-
-    for attempt in range(2):
-        try:
-            resp = requests.post(webhook_url, json={"blocks": blocks}, timeout=10)
-            if resp.status_code == 200 and resp.text == "ok":
-                log.info("Slack digest sent (%d articles)", len(articles))
-                return True
-            elif resp.status_code >= 500 and attempt == 0:
-                time.sleep(2)
-                continue
-            else:
-                log.error("Slack error %d: %s", resp.status_code, resp.text[:200])
-                return False
-        except Exception:
-            if attempt == 0:
-                time.sleep(2)
-                continue
-            log.exception("Failed to send Slack message")
-            return False
-
-    return False
-
-
-# ─── Helpers ──────────────────────────────────────────────────────
-
-def _extract_hook(summary: str | None) -> str:
-    """Extract the hook (TL;DR) from a summary in 'hook|||detail' format."""
-    if not summary:
-        return ""
-    sep = summary.find("|||")
-    hook = summary[:sep].strip() if sep != -1 else summary.strip()
-    if len(hook) > 150:
-        hook = hook[:147] + "..."
-    return hook
-
-
-def _pick_emoji(score: int) -> str:
-    if score >= 9:
-        return "🔥"
-    if score >= 7:
-        return "👀"
-    return "📌"
+    digest = build_digest(articles, now or datetime.now(config.LOCAL_TZ))
+    ok = _post(webhook_url, {"blocks": slack_blocks(digest)}, {200}, "Slack")
+    if ok:
+        log.info("Slack digest sent (%d articles)", len(articles))
+    return ok

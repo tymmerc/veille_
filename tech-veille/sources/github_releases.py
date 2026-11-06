@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import re
 from datetime import datetime, timezone, timedelta
 
 import requests
 
+from . import net
 from .base import Article, BaseSource
 
 log = logging.getLogger(__name__)
@@ -19,6 +22,20 @@ DEFAULT_REPOS = [
         "category": "ia",
     },
 ]
+
+# Canary / nightly / beta builds: Next.js alone ships several a day
+UNSTABLE = re.compile(r"(canary|nightly|alpha|beta|[-.]rc[.\d]|-rc$|preview|insiders)", re.IGNORECASE)
+PER_PAGE = 30  # enough to reach stable backports (14.x, 15.x) behind the canaries
+
+
+def is_stable(release: dict, prefix: str = "") -> bool:
+    tag = release.get("tag_name", "") or ""
+    if release.get("prerelease") or release.get("draft"):
+        return False
+    if prefix and not tag.startswith(prefix):
+        return False
+    return not UNSTABLE.search(tag)
+
 
 HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -43,23 +60,33 @@ class GitHubReleasesSource(BaseSource):
             category = repo_config.get("category", "tech")
 
             try:
-                fetched = self._fetch_repo(repo, label, category, cutoff)
+                fetched = self._fetch_repo(repo, label, category, cutoff,
+                                           prefix=repo_config.get("tag_prefix", ""),
+                                           score=int(repo_config.get("score", 0)))
                 articles.extend(fetched)
                 log.info("GitHub %s: %d releases", repo, len(fetched))
-            except Exception:
+                self._note(f"GitHub {repo}", True)
+            except Exception as exc:
                 log.warning("Failed to fetch GitHub releases for %s", repo, exc_info=True)
+                self._note(f"GitHub {repo}", False, net.describe_error(exc))
 
         return articles
 
     def _fetch_repo(
-        self, repo: str, label: str, category: str, cutoff: datetime
+        self, repo: str, label: str, category: str, cutoff: datetime,
+        prefix: str = "", score: int = 0,
     ) -> list[Article]:
         url = f"https://api.github.com/repos/{repo}/releases"
-        resp = requests.get(url, headers=HEADERS, params={"per_page": 10}, timeout=15)
+        headers = dict(HEADERS)
+        if os.getenv("GITHUB_TOKEN"):  # optional: 5000 calls/hour instead of 60
+            headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+        resp = requests.get(url, headers=headers, params={"per_page": PER_PAGE}, timeout=15)
         resp.raise_for_status()
 
         articles: list[Article] = []
         for release in resp.json():
+            if not is_stable(release, prefix):
+                continue
             published = release.get("published_at")
             if not published:
                 continue
@@ -95,6 +122,7 @@ class GitHubReleasesSource(BaseSource):
                 external_id=ext_id,
                 created_at=pub_dt,
                 is_official=True,
+                score=score,  # 0 = let the summarizer decide (9 for repos a user follows)
             ))
 
         return articles

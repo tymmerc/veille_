@@ -6,8 +6,3 @@ node_modules/
 next-env.d.ts
 test-results/
 playwright-report/
-tech-veille/venv/
-tech-veille/__pycache__/
-**/__pycache__/
-*.pyc
-data/

@@ -5,19 +5,45 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
+from urllib.parse import urlparse
+
 import feedparser
-import urllib.request
 
 import config
+from . import net
 from .base import Article, BaseSource
 
 log = logging.getLogger(__name__)
+
+# Feeds that moved or died. Old user configs (and veille-app's suggestions)
+# still point at them, so we rewrite them instead of failing every hour.
+FEED_REDIRECTS = {
+    "https://blog.openai.com/rss/": "https://openai.com/news/rss.xml",
+    "https://blog.openai.com/rss": "https://openai.com/news/rss.xml",
+    "https://feeds.technologyreview.com/technologyreview/ai/":
+        "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+    "https://feeds.technologyreview.com/technologyreview/ai":
+        "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+    "https://thisweekinreact.com/rss.xml": "https://thisweekinreact.com/newsletter/rss.xml",
+}
+
+
+def normalize_feed_url(url: str) -> str:
+    return FEED_REDIRECTS.get(url.strip(), url.strip())
+
+
+def feed_label(url: str) -> str:
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return f"RSS {host or url}"
 
 
 class RSSSource(BaseSource):
 
     def __init__(self, feeds: dict[str, list[str]] | None = None):
-        self.feeds = feeds or {}
+        self.feeds = {
+            category: list(dict.fromkeys(normalize_feed_url(u) for u in urls))
+            for category, urls in (feeds or {}).items()
+        }
 
     def fetch(self) -> list[Article]:
         if not self.feeds:
@@ -46,17 +72,20 @@ class RSSSource(BaseSource):
         seen_urls: set[str],
     ) -> None:
         try:
-            resp = urllib.request.urlopen(feed_url, timeout=15)
-            raw_feed = resp.read()
-        except Exception:
-            log.warning("Failed to download RSS feed %s (timeout or connection error)", feed_url)
+            raw_feed = net.get(feed_url).content
+        except Exception as exc:
+            reason = net.describe_error(exc)
+            log.warning("Failed to download RSS feed %s (%s)", feed_url, reason)
+            self._note(feed_label(feed_url), False, reason)
             return
 
         feed = feedparser.parse(raw_feed)
 
         if feed.bozo and not feed.entries:
             log.warning("RSS feed %s returned invalid data: %s", feed_url, feed.get("bozo_exception", "unknown"))
+            self._note(feed_label(feed_url), False, "flux illisible")
             return
+        self._note(feed_label(feed_url), True)
 
         feed_title = feed.feed.get("title", feed_url)
 

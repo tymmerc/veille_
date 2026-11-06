@@ -4,40 +4,59 @@ import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 
-import requests
-
-import config
+from . import net
 from .base import Article, BaseSource
 
 log = logging.getLogger(__name__)
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 NS = {"atom": "http://www.w3.org/2005/Atom"}
+MAX_KEYWORDS = 15
+MAX_RESULTS = 10
+
+
+def build_query(categories: list[str], keywords: list[str]) -> str:
+    """arXiv search_query with real spaces around OR/AND.
+
+    requests turns spaces into "+", which arXiv reads as a separator. Writing
+    "+OR+" ourselves got encoded as "%2BOR%2B" and matched nothing at all.
+    Keywords keep the feed relevant: without them we would send ~30 random
+    AI papers an hour to the local LLM.
+    """
+    cats = " OR ".join(f"cat:{c}" for c in categories)
+    terms = list(dict.fromkeys(k.strip().lower() for k in keywords if k.strip()))
+    terms = [t.replace('"', "") for t in terms][:MAX_KEYWORDS]
+    if not terms:
+        return cats
+    words = " OR ".join(f'abs:"{t}"' for t in terms)
+    return f"({cats}) AND ({words})"
 
 
 class ArxivSource(BaseSource):
 
-    def __init__(self, categories: list[str] | None = None):
+    def __init__(self, categories: list[str] | None = None, keywords: list[str] | None = None):
         self.categories = categories or []
+        self.keywords = keywords or []
 
     def fetch(self) -> list[Article]:
         if not self.categories:
             log.info("Arxiv: no categories configured, skipping")
             return []
-        cats = "+OR+".join(f"cat:{c}" for c in self.categories)
         params = {
-            "search_query": cats,
+            "search_query": build_query(self.categories, self.keywords),
             "sortBy": "submittedDate",
             "sortOrder": "descending",
-            "max_results": 30,
+            "max_results": MAX_RESULTS,
         }
 
         try:
-            resp = requests.get(ARXIV_API, params=params, timeout=15)
-            resp.raise_for_status()
-        except Exception:
-            log.exception("Arxiv API request failed")
+            resp = net.get(ARXIV_API, params=params, timeout=30, wait_on_429=5)
+        except Exception as exc:
+            reason = net.describe_error(exc)
+            log.warning("Arxiv API request failed (%s)", reason)
+            self._note("arXiv", False, reason)
             return []
+        self._note("arXiv", True)
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=48)  # arxiv updates ~daily
         articles: list[Article] = []

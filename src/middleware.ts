@@ -42,6 +42,15 @@ async function isAuthenticated(request: NextRequest): Promise<boolean> {
   }
 }
 
+// The app listens on 127.0.0.1:3004 behind nginx: request.url carries that address, so a
+// redirect built from it sent visitors to https://localhost:3004 (seen 06/11/2026).
+// nginx passes the public host and scheme, use them.
+function loginUrl(request: NextRequest): URL {
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "tymmerc.eu";
+  const proto = request.headers.get("x-forwarded-proto") ?? "https";
+  return new URL("/veille/login", `${proto}://${host}`);
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -49,10 +58,11 @@ export async function middleware(request: NextRequest) {
   if (
     pathname.startsWith("/bookmarks") ||
     pathname.startsWith("/likes") ||
-    pathname.startsWith("/settings")
+    pathname.startsWith("/settings") ||
+    pathname.startsWith("/analyse")
   ) {
     if (!(await isAuthenticated(request))) {
-      return NextResponse.redirect(new URL("/veille/login", request.url));
+      return NextResponse.redirect(loginUrl(request));
     }
   }
 
@@ -65,6 +75,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/api/sync") ||
     pathname.startsWith("/api/friends") ||
     pathname.startsWith("/api/presets") ||
+    pathname.startsWith("/api/analyses") ||
     pathname.match(/^\/api\/articles\/[^/]+\/(like|bookmark|read)$/)
   ) {
     if (!(await isAuthenticated(request))) {
@@ -98,5 +109,7 @@ export const config = {
     "/api/articles/:path*",
     "/api/users/:path*",
     "/u/:path*",
+    "/analyse/:path*",
+    "/api/analyses/:path*",
   ],
 };

@@ -29,6 +29,7 @@ class HackerNewsSource(BaseSource):
         articles: list[Article] = []
         seen_ids: set[str] = set()
 
+        self._searches_ok = 0
         # Keyword searches only — no generic front page dump
         for kw in self.keywords:
             self._search(
@@ -42,6 +43,10 @@ class HackerNewsSource(BaseSource):
                 seen_ids=seen_ids,
             )
 
+        if self._searches_ok:
+            self._note("Hacker News", True)
+        else:
+            self._note("Hacker News", False, "aucune recherche n'a répondu")
         log.info("HackerNews: %d articles collected", len(articles))
         return articles
 
@@ -67,6 +72,7 @@ class HackerNewsSource(BaseSource):
         if data is None:
             log.error("HN Algolia request failed after %d attempts", max_attempts)
             return
+        self._searches_ok += 1
 
         for hit in data.get("hits", []):
             obj_id = hit.get("objectID", "")

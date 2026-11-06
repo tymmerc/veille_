@@ -67,9 +67,8 @@ describe("matchesUserInterests", () => {
   it("matches multi-word keyword in title", () => {
     const matcher = buildKeywordMatcher({ keywords: ["claude code"] });
     const result = matchesUserInterests(
-      { title: "New Claude Code Features", summary: "", source: "HN" },
+      { title: "New Claude Code Features", summary: "" },
       matcher,
-      new Set(),
     );
     expect(result).toBe(true);
   });
@@ -77,9 +76,8 @@ describe("matchesUserInterests", () => {
   it("matches multi-word keyword in summary", () => {
     const matcher = buildKeywordMatcher({ keywords: ["claude code"] });
     const result = matchesUserInterests(
-      { title: "New Release", summary: "This claude code update is great", source: "HN" },
+      { title: "New Release", summary: "This claude code update is great" },
       matcher,
-      new Set(),
     );
     expect(result).toBe(true);
   });
@@ -88,51 +86,57 @@ describe("matchesUserInterests", () => {
     const matcher = buildKeywordMatcher({ keywords: ["Rust"] });
     // "Rust" should match
     expect(matchesUserInterests(
-      { title: "Rust 2026 Edition", summary: "", source: "HN" },
-      matcher, new Set(),
+      { title: "Rust 2026 Edition", summary: "" },
+      matcher,
     )).toBe(true);
     // "Rustic" should NOT match (word boundary)
     expect(matchesUserInterests(
-      { title: "Rustic Furniture Design", summary: "", source: "HN" },
-      matcher, new Set(),
+      { title: "Rustic Furniture Design", summary: "" },
+      matcher,
     )).toBe(false);
   });
 
   it("does NOT match substring for single words (barcode vs code)", () => {
     const matcher = buildKeywordMatcher({ keywords: ["code"] });
     expect(matchesUserInterests(
-      { title: "Barcode Scanner App", summary: "", source: "HN" },
-      matcher, new Set(),
+      { title: "Barcode Scanner App", summary: "" },
+      matcher,
     )).toBe(false);
     expect(matchesUserInterests(
-      { title: "Code Review Tools", summary: "", source: "HN" },
-      matcher, new Set(),
+      { title: "Code Review Tools", summary: "" },
+      matcher,
     )).toBe(true);
   });
 
-  it("matches by subreddit source", () => {
-    const matcher = buildKeywordMatcher({ keywords: ["something rare"] });
-    const subs = new Set(["r/clauudeai"]);
-    const result = matchesUserInterests(
-      { title: "Random Title", summary: "", source: "r/ClauudeAI" },
-      matcher, subs,
-    );
-    expect(result).toBe(true);
+  it("matches a keyword at the start of the text", () => {
+    const matcher = buildKeywordMatcher({ keywords: ["claude code"] });
+    expect(matchesUserInterests(
+      { title: "OpenAI IPO", summary: "", text: "Anthropic's Claude Code has gained share." },
+      matcher,
+    )).toBe(true);
   });
 
-  it("returns true when no keywords configured (show everything)", () => {
+  it("ignores a keyword beyond the start of the text", () => {
+    const matcher = buildKeywordMatcher({ keywords: ["claude code"] });
+    expect(matchesUserInterests(
+      { title: "Long post", summary: "", text: "x ".repeat(800) + "claude code" },
+      matcher,
+    )).toBe(false);
+  });
+
+  it("returns false when no keywords configured (nothing matches)", () => {
     const matcher = buildKeywordMatcher({});
     expect(matchesUserInterests(
-      { title: "Anything", summary: "", source: "HN" },
-      matcher, new Set(),
-    )).toBe(true);
+      { title: "Anything", summary: "" },
+      matcher,
+    )).toBe(false);
   });
 
   it("case insensitive matching", () => {
     const matcher = buildKeywordMatcher({ keywords: ["CLAUDE CODE"] });
     expect(matchesUserInterests(
-      { title: "claude code is great", summary: "", source: "HN" },
-      matcher, new Set(),
+      { title: "claude code is great", summary: "" },
+      matcher,
     )).toBe(true);
   });
 });
@@ -162,12 +166,69 @@ describe("classifyArticle", () => {
     expect(classifyArticle(makeArticle(), ctx)).toBe("discover");
   });
 
-  it("classifies as followed when source matches subreddit", () => {
-    const ctx = buildClassifyContext(makeConfig({ subreddits: ["ClaudeAI"] }));
+  // 06/11/2026 : un subreddit ou un flux RSS suivi laissait passer n'importe quel sujet
+  it("followed subreddit: relevant with a keyword, discover without", () => {
+    const ctx = buildClassifyContext(makeConfig({ keywords: ["claude code"], subreddits: ["ClaudeAI"] }));
     expect(classifyArticle(
-      makeArticle({ source: "r/ClaudeAI", platform: "reddit" }),
+      makeArticle({ title: "Claude Code hooks", source: "r/ClaudeAI", platform: "reddit" }),
+      ctx,
+    )).toBe("relevant");
+    expect(classifyArticle(
+      makeArticle({ title: "Random meme", summary: "", source: "r/ClaudeAI", platform: "reddit" }),
+      ctx,
+    )).toBe("discover");
+  });
+
+  it("followed RSS domain: relevant with a keyword, discover without", () => {
+    const ctx = buildClassifyContext(makeConfig({
+      keywords: ["claude code"],
+      rss_feeds: ["https://techcrunch.com/category/artificial-intelligence/feed/"],
+    }));
+    const url = "https://techcrunch.com/2026/11/06/story/";
+    expect(classifyArticle(
+      makeArticle({ title: "Meta acquires Conductor", summary: "", platform: "rss", url }),
+      ctx,
+    )).toBe("discover");
+    expect(classifyArticle(
+      makeArticle({ title: "Anthropic ships Claude Code 3", platform: "rss", url }),
+      ctx,
+    )).toBe("relevant");
+  });
+
+  it("classifies as followed when a blog article comes from a followed account", () => {
+    const ctx = buildClassifyContext(makeConfig({
+      followed_accounts: [{ platform: "blog", handle: "https://www.anthropic.com/news", label: "Anthropic" }],
+    }));
+    expect(classifyArticle(
+      makeArticle({ title: "Introducing a model", summary: "", source: "Anthropic", platform: "blog", url: "https://x.test/a" }),
       ctx,
     )).toBe("followed");
+  });
+
+  it("a link to a followed blog's site from another platform is not followed", () => {
+    const ctx = buildClassifyContext(makeConfig({
+      keywords: ["claude code"],
+      followed_accounts: [{ platform: "blog", handle: "https://www.anthropic.com/news", label: "Anthropic" }],
+    }));
+    expect(classifyArticle(
+      makeArticle({ title: "Some research", summary: "", url: "https://www.anthropic.com/research/x", platform: "hackernews" }),
+      ctx,
+    )).toBe("discover");
+  });
+
+  it("classifies as followed when a release comes from a followed GitHub repo", () => {
+    const ctx = buildClassifyContext(makeConfig({
+      keywords: ["hooks"],
+      github_repos: [{ repo: "anthropics/claude-code", label: "Claude Code", category: "ia" }],
+    }));
+    expect(classifyArticle(
+      makeArticle({ title: "Claude Code v3.1", summary: "", source: "GitHub/Claude Code", platform: "github" }),
+      ctx,
+    )).toBe("followed");
+    expect(classifyArticle(
+      makeArticle({ title: "Next.js 16.1", summary: "", source: "GitHub/Next.js", platform: "github" }),
+      ctx,
+    )).toBe("discover");
   });
 
   it("classifies as followed when URL domain matches followed_accounts", () => {
@@ -197,13 +258,13 @@ describe("classifyArticle", () => {
   });
 
   it("followed takes priority over relevant", () => {
-    // Article from followed subreddit that also matches keywords
+    // Release of a followed repo that also matches keywords
     const ctx = buildClassifyContext(makeConfig({
       keywords: ["claude code"],
-      subreddits: ["ClaudeAI"],
+      github_repos: [{ repo: "anthropics/claude-code", label: "Claude Code" }],
     }));
     expect(classifyArticle(
-      makeArticle({ title: "Claude Code Update", source: "r/ClaudeAI", platform: "reddit" }),
+      makeArticle({ title: "Claude Code Update", source: "GitHub/Claude Code", platform: "github" }),
       ctx,
     )).toBe("followed");
   });
@@ -231,6 +292,17 @@ describe("classifyWithSourceFilter", () => {
       makeArticle({ title: "Claude Code Update", platform: "blog" }),
       ctx,
     )).toBe("relevant");
+  });
+
+  it("never pushes a followed GitHub repo down (no GitHub switch in the settings)", () => {
+    const ctx = buildClassifyContext(makeConfig({
+      enabled_sources: ["blog", "rss"],
+      github_repos: [{ repo: "anthropics/claude-code", label: "Claude Code" }],
+    }));
+    expect(classifyWithSourceFilter(
+      makeArticle({ title: "Claude Code v3.1", source: "GitHub/Claude Code", platform: "github" }),
+      ctx,
+    )).toBe("followed");
   });
 
   it("does not filter when all 5 sources enabled", () => {
@@ -273,24 +345,26 @@ describe("classifyWithSourceFilter", () => {
 describe("buildClassifyContext", () => {
   it("builds empty context for null config", () => {
     const ctx = buildClassifyContext(null);
-    expect(ctx.followedSubs.size).toBe(0);
-    expect(ctx.followedDomains).toEqual([]);
+    expect(ctx.followedBlogs.size).toBe(0);
+    expect(ctx.followedBlogDomains).toEqual([]);
+    expect(ctx.followedRepos.size).toBe(0);
     expect(ctx.matcher.multi).toEqual([]);
     expect(ctx.matcher.patterns).toEqual([]);
   });
 
-  it("extracts followed domains from rss_feeds and followed_accounts", () => {
+  it("follows blogs and GitHub repos, never RSS feeds or subreddits", () => {
     const ctx = buildClassifyContext({
       rss_feeds: ["https://blog.openai.com/rss/"],
-      followed_accounts: [{ platform: "blog", handle: "https://anthropic.com/news", label: "Anthropic" }],
+      subreddits: ["ClaudeAI"],
+      followed_accounts: [
+        { platform: "blog", handle: "https://anthropic.com/news", label: "Anthropic" },
+        { platform: "blog", handle: "www.deepmind.google/blog", label: "" },
+        { platform: "twitter", handle: "AnthropicAI", label: "Anthropic" },
+      ],
+      github_repos: [{ repo: "anthropics/claude-code" }, { repo: "not-a-repo" }],
     });
-    expect(ctx.followedDomains).toContain("blog.openai.com");
-    expect(ctx.followedDomains).toContain("anthropic.com");
-  });
-
-  it("builds subreddit set with r/ prefix", () => {
-    const ctx = buildClassifyContext({ subreddits: ["ClaudeAI", "netsec"] });
-    expect(ctx.subredditSet.has("r/claudeai")).toBe(true);
-    expect(ctx.subredditSet.has("r/netsec")).toBe(true);
+    expect([...ctx.followedBlogs]).toEqual(["Anthropic", "https://www.deepmind.google/blog"]);
+    expect(ctx.followedBlogDomains).toEqual(["anthropic.com", "deepmind.google"]);
+    expect([...ctx.followedRepos]).toEqual(["GitHub/claude-code"]);
   });
 });

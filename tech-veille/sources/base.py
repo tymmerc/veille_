@@ -32,3 +32,11 @@ class BaseSource(ABC):
     def fetch(self) -> list[Article]:
         """Fetch recent articles. Returns deduplicated list."""
         ...
+
+    def _note(self, key: str, ok: bool, detail: str = "") -> None:
+        """Record whether one feed/endpoint answered, for health alerts."""
+        from health import Check  # root module, imported lazily to keep sources standalone
+
+        if not hasattr(self, "checks"):
+            self.checks = []
+        self.checks.append(Check(key=key, ok=ok, detail=detail))

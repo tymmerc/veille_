@@ -10,11 +10,14 @@ from psycopg2.extras import RealDictCursor
 
 import config
 from sources.base import Article
+from stack import stack_security_hits
 
 log = logging.getLogger(__name__)
 
 
 def _conn():
+    if not config.DATABASE_URL:
+        raise RuntimeError("DATABASE_URL manquant : il doit être dans /opt/tech-veille/.env")
     return psycopg2.connect(config.DATABASE_URL)
 
 
@@ -66,7 +69,15 @@ def purge_old(days: int = 30) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM articles WHERE found_at < %s", (cutoff,))
+            # Bookmarks, likes and shares cascade on delete: never purge what someone kept
+            cur.execute(
+                """DELETE FROM articles a
+                   WHERE a.found_at < %s
+                     AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.article_id = a.id)
+                     AND NOT EXISTS (SELECT 1 FROM likes l WHERE l.article_id = a.id)
+                     AND NOT EXISTS (SELECT 1 FROM shared_articles s WHERE s.article_id = a.id)""",
+                (cutoff,),
+            )
             deleted = cur.rowcount
         conn.commit()
     if deleted:
@@ -91,15 +102,10 @@ def get_all_enabled_sources() -> dict:
     all_rss_feeds: set[str] = set()
     all_arxiv_cats: set[str] = set()
     all_hn_keywords: set[str] = set()
-    all_nitter_feeds: set[str] = set()
     all_blog_accounts: dict[str, str] = {}  # label -> url, dedup by url
     all_github_repos: dict[str, dict] = {}  # repo -> {repo, label, category}
     all_twitter_accounts: set[str] = set()
-
-    NITTER_INSTANCES = [
-        "https://nitter.net",
-        "https://nitter.privacydev.net",
-    ]
+    all_keywords: set[str] = set()
 
     for row in rows:
         pc = row["prompt_config"]
@@ -119,21 +125,21 @@ def get_all_enabled_sources() -> dict:
             all_arxiv_cats.add(cat)
         for kw in pc.get("hn_keywords", []):
             all_hn_keywords.add(kw)
+        for kw in [*pc.get("keywords", []), *pc.get("hn_keywords", [])]:
+            all_keywords.add(kw)
 
         # Extract followed_accounts from prompt_config
         for account in pc.get("followed_accounts", []):
             platform = account.get("platform", "")
             handle = account.get("handle", "").strip().lstrip("@")
-            label = account.get("label", handle)
             if not handle:
                 continue
 
             if platform == "twitter":
-                for instance in NITTER_INSTANCES:
-                    all_nitter_feeds.add(f"{instance}/{handle}/rss")
+                all_twitter_accounts.add(handle)
             elif platform == "blog":
-                url = handle if handle.startswith("http") else f"https://{handle}"
-                all_blog_accounts[label or url] = url
+                name, url = _blog_account(account)
+                all_blog_accounts[name] = url
 
         # GitHub repos to track releases
         for repo_cfg in pc.get("github_repos", []):
@@ -141,16 +147,12 @@ def get_all_enabled_sources() -> dict:
             if repo and "/" in repo:
                 all_github_repos[repo] = repo_cfg
 
-        # Twitter accounts to follow via Nitter
+        # Twitter accounts: no free RSS bridge left (Nitter closed, xcancel blocks
+        # servers), so they are only reported as skipped by main.py.
         for acc in pc.get("twitter_accounts", []):
             acc = acc.strip().lstrip("@")
             if acc:
                 all_twitter_accounts.add(acc)
-
-    # Add twitter_accounts as Nitter RSS feeds
-    for acc in all_twitter_accounts:
-        for instance in NITTER_INSTANCES:
-            all_nitter_feeds.add(f"{instance}/{acc}/rss")
 
     # Build a structure compatible with the existing source classes.
     # For subreddits, we don't have per-category info anymore, so use "tech" as default.
@@ -174,10 +176,23 @@ def get_all_enabled_sources() -> dict:
         "arxiv_categories": list(all_arxiv_cats),
         "hn_enabled": len(all_hn_keywords) > 0,
         "hn_keywords": list(all_hn_keywords),
-        "nitter_feeds": list(all_nitter_feeds),
+        "twitter_accounts": sorted(all_twitter_accounts),
+        "keywords": sorted(all_keywords, key=str.lower),
         "blog_accounts": blog_accounts,
         "github_repos": list(all_github_repos.values()),
     }
+
+
+def get_admin_webhook(username: str) -> str:
+    """Discord webhook of the admin account, used for source health alerts."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT webhook_url FROM users WHERE username = %s AND webhook_url <> ''",
+                (username,),
+            )
+            row = cur.fetchone()
+    return row[0] if row else ""
 
 
 def get_users_with_webhooks() -> list[dict]:
@@ -186,9 +201,11 @@ def get_users_with_webhooks() -> list[dict]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """SELECT id, discord_id, username, webhook_url, slack_webhook_url,
+                          to_jsonb(u) -> 'notify_digest' AS notify_digest,
+                          to_jsonb(u) -> 'notify_instant_min' AS notify_instant_min,
                           prompt_config, scoring_notes, min_score, notify_enabled,
                           sync_hours, sync_days, last_notified_at
-                   FROM users
+                   FROM users u
                    WHERE (webhook_url IS NOT NULL AND webhook_url != ''
                           OR slack_webhook_url IS NOT NULL AND slack_webhook_url != '')
                      AND notify_enabled = true"""
@@ -242,7 +259,6 @@ def get_user_scoring_notes(user: dict) -> str:
 def get_unsent_articles_for_user(user: dict, hours: int = 24) -> list[Article]:
     """Get articles created AFTER the user's last notification.
     Falls back to last N hours if no previous notification."""
-    user_id = user["id"]
     fallback_since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     # Use last_notified_at to avoid re-sending the same articles
@@ -263,7 +279,7 @@ def get_unsent_articles_for_user(user: dict, hours: int = 24) -> list[Article]:
                 """SELECT id, platform, external_id, title, url, text, summary,
                           score, category, source, created_at, title_original, is_official
                    FROM articles
-                   WHERE created_at > %s
+                   WHERE found_at > %s
                      AND score >= %s
                    ORDER BY score DESC, created_at DESC""",
                 (since, user.get("min_score") or 4),
@@ -316,8 +332,62 @@ def get_all_user_preferences() -> str:
     return "\n---\n".join(row[0] for row in rows)
 
 
+# Keywords are looked for in the title, the summary and the start of the text
+KEYWORD_TEXT_CHARS = 1500
+
+
+def _blog_account(account: dict) -> tuple[str, str] | None:
+    """(name, url) of a followed blog, named as the blog scraper names its articles."""
+    handle = (account.get("handle") or "").strip().lstrip("@")
+    if account.get("platform") != "blog" or not handle:
+        return None
+    url = handle if handle.startswith("http") else f"https://{handle}"
+    return account.get("label", handle) or url, url
+
+
+def _github_source(repo_cfg: dict) -> str | None:
+    """Source name of a followed repo's releases, as sources/github_releases.py sets it."""
+    repo = repo_cfg.get("repo", "")
+    if not repo or "/" not in repo:
+        return None
+    return f"GitHub/{repo_cfg.get('label', repo.split('/')[-1])}"
+
+
+def _followed_sources(pc: dict) -> set[tuple[str, str]]:
+    """(platform, source) pairs a user follows by name: they pass without a keyword."""
+    followed = set()
+    for account in pc.get("followed_accounts", []):
+        blog = _blog_account(account)
+        if blog:
+            followed.add(("blog", blog[0]))
+    for repo_cfg in pc.get("github_repos", []):
+        source = _github_source(repo_cfg)
+        if source:
+            followed.add(("github", source))
+    return followed
+
+
+def _has_keyword(text_lower: str, keywords: set[str]) -> bool:
+    """Multi-word keywords match as substrings, single words on word boundaries
+    (so "code" never matches "barcode")."""
+    for kw in keywords:
+        if " " in kw:
+            if kw in text_lower:
+                return True
+        elif re.search(rf"\b{re.escape(kw)}\b", text_lower):
+            return True
+    return False
+
+
 def filter_for_user(articles: list[Article], user: dict) -> list[Article]:
-    """Filter articles to match a user's prompt_config keywords."""
+    """Keep the articles that match a user's phrase.
+
+    An article passes when its title, summary or the start of its text holds one of the
+    user's keywords. A followed subreddit or RSS feed is not enough on its own (06/11/2026:
+    the TechCrunch AI feed let 20 unrelated stories into one summary). Pass without a
+    keyword: posts of a followed blog, releases of a followed GitHub repo, and for the admin,
+    security news about the stack and official Claude sources (Tym, 06/11/2026).
+    """
     pc = user.get("prompt_config")
     if isinstance(pc, str):
         try:
@@ -328,64 +398,21 @@ def filter_for_user(articles: list[Article], user: dict) -> list[Article]:
     if not isinstance(pc, dict):
         return articles
 
-    # Build keyword set for matching
-    keywords = set()
-    for kw in pc.get("keywords", []):
-        keywords.add(kw.lower())
-    for kw in pc.get("hn_keywords", []):
-        keywords.add(kw.lower())
-
-    # Also match by subreddit/source
-    subreddits = {f"r/{s}".lower() for s in pc.get("subreddits", [])}
-
+    keywords = {kw.lower() for kw in [*pc.get("keywords", []), *pc.get("hn_keywords", [])]}
+    followed = _followed_sources(pc)
     min_score = user.get("min_score", 6) or 6
-
-    # Also match by RSS feed domain
-    rss_domains = set()
-    for feed_url in pc.get("rss_feeds", []):
-        try:
-            from urllib.parse import urlparse
-            rss_domains.add(urlparse(feed_url).netloc.lower())
-        except Exception:
-            pass
+    stack_words = user.get("stack_keywords") or []
+    always = user.get("always_sources") or set()  # (platform, source) always sent (admin, set by main.py)
 
     result = []
     for a in articles:
         if a.score < min_score:
             continue
-
-        # Match by subreddit source
-        if a.source.lower() in subreddits:
+        head = f"{a.title} {a.summary or ''}"
+        if stack_words and stack_security_hits(head, stack_words):
+            result.append(a)  # Security news about the user's own stack (admin only, set by main.py)
+        elif (a.platform, a.source) in followed or (a.platform, a.source) in always:
             result.append(a)
-            continue
-
-        # Match by keyword in title + summary (word-boundary for single words)
-        text_lower = f"{a.title} {a.summary or ''}".lower()
-        matched = False
-        for kw in keywords:
-            if ' ' in kw:
-                # Multi-word: substring match is fine
-                if kw in text_lower:
-                    matched = True
-                    break
-            else:
-                # Single word: use word boundary to avoid "code" matching "barcode"
-                if re.search(rf'\b{re.escape(kw)}\b', text_lower):
-                    matched = True
-                    break
-        if matched:
+        elif _has_keyword(f"{head} {(a.text or '')[:KEYWORD_TEXT_CHARS]}".lower(), keywords):
             result.append(a)
-            continue
-
-        # Match RSS by domain
-        if a.platform == "rss" and rss_domains:
-            try:
-                from urllib.parse import urlparse
-                article_domain = urlparse(a.url).netloc.lower()
-                if any(d in article_domain for d in rss_domains):
-                    result.append(a)
-                    continue
-            except Exception:
-                pass
-
     return result

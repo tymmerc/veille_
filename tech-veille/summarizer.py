@@ -41,52 +41,82 @@ Titre : {title}
 Source : {source}
 Contenu : {text}"""
 
-HOOK_PROMPT = """Ecris UNE SEULE phrase d'accroche en français pour cet article tech.
-La phrase doit donner envie de cliquer, être factuelle et concise (max 100 caractères).
-Ne commence pas par "Découvrez". Pas de ponctuation excessive.
-Base-toi UNIQUEMENT sur le titre et le contenu, n'invente rien.
+SUMMARY_PROMPT = """Tu résumes un article tech pour un développeur français pressé.
+
+Règles :
+- Utilise UNIQUEMENT les faits écrits dans le TEXTE. Si une information n'y est pas, ne l'écris pas.
+- N'explique jamais un sigle ou un nom que le texte n'explique pas.
+- Pas d'introduction ("Dans cet article", "Cet article", "Voici") ni de conclusion ou d'avis.
+- Garde les noms propres et les termes techniques tels quels (Claude Code, MCP, Next.js, CVE-2026-1234).
+
+Réponds en JSON : {{"accroche": "...", "points": ["...", "..."]}}
+- accroche : une phrase de 15 à 25 mots qui dit le fait principal (qui fait quoi, ou ce qui change).
+- points : de 0 à 3 faits concrets en plus (chiffre, version, date, prix, conséquence), une phrase courte chacun.
+  Liste vide si le texte n'en contient pas.
+
+Exemple :
+TITRE : Show HN: K8sman – A Native Kubernetes IDE
+TEXTE : K8sman is a native Kubernetes IDE built with Flutter and a Go backend. Nothing to install in the cluster. It uses less than half the RAM of Lens and ships with Argo CD, Prometheus and Trivy integrations. Apache 2.0, available for macOS, Windows and Linux.
+JSON : {{"accroche": "K8sman est un IDE Kubernetes natif écrit en Flutter et Go, sans rien à installer dans le cluster.", "points": ["Il consomme moins de la moitié de la RAM de Lens.", "Intégrations Argo CD, Prometheus et Trivy fournies.", "Licence Apache 2.0, pour macOS, Windows et Linux."]}}
+
+TITRE : {title}
+SOURCE : {source}
+TEXTE : {text}
+JSON :"""
+
+TITLE_ONLY_PROMPT = """Reformule ce titre d'article tech en une phrase française claire de 8 à 20 mots.
+N'ajoute AUCUNE information absente du titre. Garde les noms propres et termes techniques tels quels.
+Réponds uniquement avec la phrase.
 
 Titre : {title}
-Contenu : {text}"""
+Phrase :"""
 
-DETAIL_PROMPT = """Ecris un résumé détaillé de cet article tech en français, en 5-8 phrases.
-Couvre le contexte, les points clés, les détails techniques importants et pourquoi c'est intéressant.
-Ton factuel mais accessible, comme un bon article de blog tech.
-Sois complet et informatif — le lecteur doit comprendre l'essentiel sans lire l'article original.
-Base-toi UNIQUEMENT sur le titre et le contenu fournis.
+RELEASE_PROMPT = """Voici les changements d'une nouvelle version de {label}.
+Écris UNE phrase française de 12 à 25 mots qui cite les 1 ou 2 changements les plus utiles pour un développeur.
+Pas d'introduction, ne commence pas par "Cette version". Réponds uniquement avec la phrase.
 
-Titre : {title}
-Source : {source}
-Contenu : {text}"""
+Changements :
+{changes}
+Phrase :"""
 
-TITLE_FR_PROMPT = """Traduis ce titre en francais correct et naturel.
-Regles :
-- Garde les noms propres en anglais (Anthropic, Claude, React, Python, OpenAI, Google, etc.)
-- Garde les termes techniques anglais connus (LLM, API, malware, ransomware, open-source, etc.)
-- Utilise un francais naturel et grammaticalement correct
-- Maximum 100 caracteres
-- Ne commence PAS par un article ("Un", "Une", "Le", "La") sauf si necessaire
-- Reponds UNIQUEMENT avec le titre traduit, rien d'autre
+# Openers the small model loves and that say nothing.
+FILLER_OPENERS = re.compile(
+    r"^\s*(?:"
+    r"dans (?:cet|ce|un|une) (?:article|post|billet)[^,.:]*[,:]\s*"
+    r"|(?:cet|cet autre) article\s+(?:explique|présente|décrit|montre)\s+(?:que\s+|comment\s+)?"
+    r"|voici[^:]*:\s*"
+    r"|le résumé[^:]*:\s*"
+    r"|découvrez\s+"
+    r"|résumé\s*:\s*"
+    r")",
+    re.IGNORECASE,
+)
+MAX_POINTS = 3
+MAX_HOOK_CHARS = 220
+MAX_POINT_CHARS = 200
+MIN_TEXT_FOR_DETAILS = 400
+MAX_RELEASE_POINTS = 5
+# Below this score an article is kept for the global feed but gets no Ollama summary
+SUMMARY_MIN_SCORE = 5
+# Changelog-like platforms: the real change lines become the points, preset score kept
+RELEASE_PLATFORMS = {"github", "release_notes"}
+RELEASE_LABEL_PREFIXES = ("GitHub/", "Notes de version ")
 
-Exemples :
-"Iran-Backed Hackers Claim Wiper Attack on Medtech" -> "Des hackers soutenus par l'Iran revendiquent une attaque wiper sur une medtech"
-"Woman In Jail After AI Face Recognition Mistake" -> "Une femme emprisonnee apres une erreur de reconnaissance faciale par IA"
-"Anthropic invests $100M into Claude Partner Network" -> "Anthropic investit 100M$ dans le Claude Partner Network"
 
-Titre a traduire : {title}"""
-
-
-def _ask_ollama(prompt: str, max_tokens: int = 256) -> str | None:
+def _ask_ollama(prompt: str, max_tokens: int = 256, json_mode: bool = False) -> str | None:
     """Send a prompt to Ollama and return the response text."""
+    payload = {
+        "model": config.OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": 0.2},
+    }
+    if json_mode:
+        payload["format"] = "json"
     try:
         resp = requests.post(
             f"{config.OLLAMA_URL}/api/generate",
-            json={
-                "model": config.OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"num_predict": max_tokens, "temperature": 0.3},
-            },
+            json=payload,
             timeout=config.OLLAMA_TIMEOUT,
         )
         resp.raise_for_status()
@@ -107,9 +137,9 @@ def _ask_ollama(prompt: str, max_tokens: int = 256) -> str | None:
 
 def score_article(article: Article, user_prefs: str = "") -> int:
     """Score an article 1-10 using Ollama. Returns 5 on failure."""
-    # GitHub releases are changelogs - auto-score 9 (they're exactly what users tracking that repo want)
-    if article.platform == "github":
-        return 9
+    # GitHub releases and official release notes are changelogs: preset score, 9 by default
+    if article.platform in RELEASE_PLATFORMS:
+        return article.score or 9  # stack repos come preset lower (6), the floor lifts security fixes
 
     if user_prefs:
         prompt = SCORE_PROMPT_WITH_PREFS.format(
@@ -191,55 +221,123 @@ def _clean(text: str, max_len: int) -> str:
     return text
 
 
-def translate_title(article: Article) -> None:
-    """Translate article title to French using Ollama. Modifies article in place."""
-    # Skip if title already looks French (heuristic)
-    fr_indicators = [" les ", " des ", " une ", " est ", " pour ", " dans ", " sur ", " avec ", " qui "]
-    if any(ind in f" {article.title.lower()} " for ind in fr_indicators):
-        return
-
-    prompt = TITLE_FR_PROMPT.format(title=article.title)
-    result = _ask_ollama(prompt, max_tokens=80)
-    if not result or len(result) < 5 or len(result) > 200:
-        return
-
-    cleaned = _clean(result, 150)
-
-    # Quality checks: reject bad translations
-    # 1. If result is nearly identical to original (model didn't translate)
-    if cleaned.lower().strip() == article.title.lower().strip():
-        return
-    # 2. If result contains obvious artifacts (quotes, explanations)
-    if any(x in cleaned for x in ['\"', "voici", "traduction", "titre"]):
-        return
-
-    article.title_original = article.title
-    article.title = cleaned
+def _tidy(sentence: str, max_len: int) -> str:
+    """Remove filler openers and quotes, capitalize, cap the length."""
+    text = FILLER_OPENERS.sub("", sentence.strip().strip("\"'«» ")).strip()
+    if not text:
+        return ""
+    text = text[0].upper() + text[1:]
+    return _clean(text, max_len)
 
 
-def summarize_article(article: Article) -> str:
-    """Translate title + generate a hook + detailed summary. Stored as 'hook|||detail'."""
-    # Translate title to French first
-    translate_title(article)
+# French words the model may add that will not appear in an English source.
+GROUNDING_ALLOW = {"IA", "UE"}
+_WORD = re.compile(r"[A-Za-zÀ-ÿ0-9][\w\-./]*")
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
-    content = article.text[:3000]
 
-    # Hook (short)
-    hook_prompt = HOOK_PROMPT.format(title=article.title, text=content[:500])
-    hook = _ask_ollama(hook_prompt, max_tokens=60)
-    hook = _clean(hook or article.title, 120)
+def _norm_numbers(text: str) -> str:
+    return re.sub(r"(?<=\d),(?=\d)", ".", text)
 
-    # Detail (longer — 5-8 sentences)
-    detail_prompt = DETAIL_PROMPT.format(
-        title=article.title, source=article.source, text=content,
-    )
-    detail = _ask_ollama(detail_prompt, max_tokens=500)
-    detail = _clean(detail or article.title, 1200)
 
+def is_grounded(sentence: str, source: str) -> bool:
+    """True if every proper name and number of `sentence` appears in `source`.
+
+    A cheap guard against the small model's inventions ("développé par Google").
+    The first word is skipped: it is capitalized only because it starts the sentence.
+    """
+    haystack = _norm_numbers(source).lower()
+    words = _WORD.findall(sentence)
+    for word in words[1:]:
+        word = word.rstrip(".-/")
+        if not word or not word[0].isupper() or word in GROUNDING_ALLOW:
+            continue
+        if word.lower() not in haystack:
+            return False
+    for number in _NUMBER.findall(_norm_numbers(sentence)):
+        if number not in haystack:
+            return False
+    return True
+
+
+def parse_summary_json(raw: str | None) -> tuple[str, list[str]] | None:
+    """Parse the model's JSON. None when unusable."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    hook = _tidy(str(data.get("accroche") or ""), MAX_HOOK_CHARS)
+    if not hook:
+        return None
+    raw_points = data.get("points") if isinstance(data.get("points"), list) else []
+    points = [p for p in (_tidy(str(x), MAX_POINT_CHARS) for x in raw_points) if p]
+    return hook, points[:MAX_POINTS]
+
+
+def format_summary(hook: str, points: list[str]) -> str:
+    """Stored as 'hook|||detail' (veille-app splits on |||). Detail = bullet lines."""
+    detail = "\n".join(f"• {p}" for p in points)
     return f"{hook}|||{detail}"
 
 
-def process_articles(articles: list[Article], user_prefs: str = "") -> list[Article]:
+def _release_changes(article: Article) -> list[str]:
+    lines = [ln.strip() for ln in (article.text or "").splitlines()[1:]]  # line 0 = header
+    return [ln for ln in lines if ln][:MAX_RELEASE_POINTS]
+
+
+def _release_label(source: str) -> str:
+    """Name shown in the release prompt: the source without its "GitHub/" or
+    "Notes de version " prefix (so "Notes de version API Claude" gives "API Claude")."""
+    for prefix in RELEASE_LABEL_PREFIXES:
+        if source.startswith(prefix):
+            return source.removeprefix(prefix)
+    return source
+
+
+def summarize_article(article: Article) -> str:
+    """French hook + up to 3 facts, taken only from the text we really have.
+
+    Titles stay as published: the small model's translations were often wrong
+    (and sometimes changed the meaning).
+    """
+    article.title_original = article.title
+    fallback = format_summary(article.title, [])
+
+    if article.platform in RELEASE_PLATFORMS:
+        changes = _release_changes(article)
+        label = _release_label(article.source)
+        raw = _ask_ollama(RELEASE_PROMPT.format(label=label, changes="\n".join(changes)), max_tokens=80)
+        hook = _tidy(raw or "", MAX_HOOK_CHARS) or article.title
+        return format_summary(hook, changes)
+
+    text = (article.text or "").strip()
+    if len(text) < MIN_TEXT_FOR_DETAILS:
+        raw = _ask_ollama(TITLE_ONLY_PROMPT.format(title=article.title), max_tokens=60)
+        hook = _tidy(raw or "", MAX_HOOK_CHARS)
+        return format_summary(hook, []) if hook else fallback
+
+    prompt = SUMMARY_PROMPT.format(title=article.title, source=article.source, text=text[:3000])
+    parsed = parse_summary_json(_ask_ollama(prompt, max_tokens=320, json_mode=True))
+    if not parsed:
+        return fallback
+    hook, points = parsed
+    source = f"{article.title}\n{text}"
+    kept = [p for p in points if is_grounded(p, source)]
+    if len(kept) < len(points):
+        log.info("Dropped %d invented point(s) for: %s", len(points) - len(kept), article.title[:60])
+    if not is_grounded(hook, source):
+        log.info("Invented hook replaced by the title for: %s", article.title[:60])
+        hook = article.title
+    return format_summary(hook, kept)
+
+
+def process_articles(
+    articles: list[Article], user_prefs: str = "", floor=None,
+) -> list[Article]:
     """Score and summarize articles. Returns only those above MIN_SCORE.
 
     Scoring is now generic (article quality) — personalization is handled
@@ -254,11 +352,18 @@ def process_articles(articles: list[Article], user_prefs: str = "") -> list[Arti
         )
 
         article.score = score_article(article, user_prefs=user_prefs)
+        if floor:  # e.g. security news about our own stack never falls under 8
+            article.score = max(article.score, floor(article))
         if article.score < config.MIN_SCORE:
             log.debug("Dropped (score=%d): %s", article.score, article.title[:60])
             continue
 
-        article.summary = summarize_article(article)
+        if article.score < SUMMARY_MIN_SCORE:
+            # Kept for the global feed; not worth an Ollama call (06/11/2026, CPU load)
+            article.title_original = article.title
+            article.summary = format_summary(article.title, [])
+        else:
+            article.summary = summarize_article(article)
         kept.append(article)
 
     log.info(
