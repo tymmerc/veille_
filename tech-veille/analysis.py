@@ -155,7 +155,8 @@ def discord_payload(saved: dict) -> dict:
         embeds.append({"description": desc[:4000], "color": 0x2F3136})
     if not embeds:
         embeds.append({"description": "Rien de marquant cette semaine.", "color": 0x2F3136})
-    embeds[-1]["footer"] = {"text": f"Analyse complète et historique : {config.DASHBOARD_URL}/analyse"}
+    embeds[-1]["footer"] = {"text": f"Analyse complète : {config.DASHBOARD_URL}/analyse · "
+                                    f"Failles à corriger avec Claude : {config.DASHBOARD_URL}/fix"}
     return {"content": content[:1900], "embeds": embeds[:10]}
 
 

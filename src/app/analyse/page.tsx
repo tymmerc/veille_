@@ -150,7 +150,8 @@ export default function AnalysePage() {
 
           <p className="mt-12 text-[11px] font-mono text-muted-foreground/40">
             Chaque fait renvoie à ses sources (numéros). Les faits sans source connue sont retirés avant l&apos;affichage.{" "}
-            <Link href="/feed" className="hover:text-foreground">voir le fil</Link>
+            <Link href="/feed" className="hover:text-foreground">voir le fil</Link> ·{" "}
+            <Link href="/fix" className="hover:text-foreground">failles à corriger</Link>
           </p>
         </article>
       )}

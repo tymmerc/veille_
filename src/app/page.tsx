@@ -1083,6 +1083,12 @@ export default function HomePage() {
             l&apos;analyse de la semaine
           </Link>
         )}
+        {user.username === "tym_merc" && (
+          <Link href="/fix"
+            className="inline-flex items-center gap-2.5 rounded-xl px-4 py-3 text-[13px] text-muted-foreground transition-colors hover:text-foreground font-mono">
+            failles à corriger
+          </Link>
+        )}
       </div>
     </div>
   );

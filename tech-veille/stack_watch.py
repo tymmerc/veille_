@@ -16,6 +16,7 @@ from pathlib import Path
 import requests
 from packaging.version import InvalidVersion, Version
 
+import fix_briefs
 import stack
 from stack import Dep
 
@@ -123,7 +124,7 @@ def format_finding(f: Finding) -> str:
     fix = f" · passer en {f.fix}" if f.fix else " · pas encore de correctif"
     link = f"https://osv.dev/vulnerability/{f.worst_id}"
     return (f"{icon} **{f.dep.name} {f.dep.version}** ({where}) : {count}{fix}\n"
-            f"   pire : {f.worst_summary} · [{f.worst_id}]({link})")
+            f"   pire : {f.worst_summary} · [{f.worst_id}]({link}) · [Corriger avec Claude]({fix_briefs.link(f.dep)})")
 
 
 def blocks(lines: list[str], size: int = 4000) -> list[str]:
@@ -218,9 +219,10 @@ def run() -> tuple[list[str], dict]:
 
     cache = _load(CACHE_PATH)
     ids = _query_ids(deps)
-    findings = [package_finding(dep, _details(vids, cache)) for dep, vids in ids.items()]
-    findings = [f for f in findings if f.count]
+    details = {dep: _details(vids, cache) for dep, vids in ids.items()}
+    findings = [f for f in (package_finding(dep, vulns) for dep, vulns in details.items()) if f.count]
     _save(CACHE_PATH, cache)
+    fix_briefs.write_all([(f, details[f.dep]) for f in findings], datetime.now(timezone.utc))
     _write_report(findings)
 
     seen = _load(SEEN_PATH)

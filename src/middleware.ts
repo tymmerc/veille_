@@ -59,7 +59,8 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/bookmarks") ||
     pathname.startsWith("/likes") ||
     pathname.startsWith("/settings") ||
-    pathname.startsWith("/analyse")
+    pathname.startsWith("/analyse") ||
+    pathname.startsWith("/fix")
   ) {
     if (!(await isAuthenticated(request))) {
       return NextResponse.redirect(loginUrl(request));
@@ -76,6 +77,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/api/friends") ||
     pathname.startsWith("/api/presets") ||
     pathname.startsWith("/api/analyses") ||
+    pathname.startsWith("/api/fixes") ||
     pathname.match(/^\/api\/articles\/[^/]+\/(like|bookmark|read)$/)
   ) {
     if (!(await isAuthenticated(request))) {
@@ -111,5 +113,7 @@ export const config = {
     "/u/:path*",
     "/analyse/:path*",
     "/api/analyses/:path*",
+    "/fix/:path*",
+    "/api/fixes/:path*",
   ],
 };
